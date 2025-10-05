@@ -4,330 +4,229 @@ const { Server } = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
+
+/**
+ * Socket.IO – כיוון לביצועים:
+ * - CORS פתוח (בשלב ראשון). אחרי שזה עובד, לצמצם ל-origins של Base44.
+ * - לא לדחוס הודעות (perMessageDeflate=false + compress(false)) כדי לצמצם latency.
+ * - לתת גם polling וגם websocket כדי שלא ייחסם בפריוויו.
+ */
 const io = new Server(server, {
-  cors: {
-    origin: '*',
-    methods: ['GET', 'POST']
-  },
-  pingTimeout: 60000,
-  pingInterval: 25000,
-  transports: ['websocket', 'polling']
+  cors: { origin: '*', methods: ['GET', 'POST'] },
+  transports: ['websocket', 'polling'],
+  pingInterval: 10000,
+  pingTimeout: 5000,
+  perMessageDeflate: false
 });
 
-// מפת שחקנים: playerId -> player data
-let players = new Map();
+// ======== State ========
+const players = new Map(); // playerId -> {id, socketId, x,y, ... , lastUpdate}
+const SOCKET_TO_PLAYER = new Map(); // socket.id -> playerId
+const TICK_MS = 50; // 20 FPS
 
-console.log('🚀 Touch World Realtime Server v3.0 Starting...');
-console.log('📡 Realtime sync: Players, Chat, Trades');
+console.log('🚀 Touch World Realtime Server v2.3 (20FPS, instant chat/bubbles)');
 
 io.on('connection', (socket) => {
-  console.log('🟢 Socket connected:', socket.id);
-  
-  let currentPlayerId = null;
-  let currentUsername = null;
+  console.log('🟢 connected:', socket.id);
 
-  // ========================================
-  // 🎮 קבלת תנועת שחקן
-  // ========================================
-  socket.on('move', (data) => {
+  // --- HELLO / SYNC: כשהקליינט מתחבר – שולח snapshot של כל השחקנים הקיימים ---
+  socket.emit('presence:all', Array.from(players.values()).map(stripForPresence));
+
+  // --- תנועת שחקן / עדכון סטייט ---
+  socket.on('move', (data = {}) => {
     try {
-      const { 
-        playerId, x, y, direction, is_moving, username, admin_level, skin_code, 
-        equipped_hair, equipped_top, equipped_pants, equipped_hat, 
-        equipped_halo, equipped_necklace, equipped_accessories, 
-        is_invisible, animation_frame 
+      const {
+        playerId, x, y,
+        direction, is_moving,
+        username, admin_level, skin_code,
+        equipped_hair, equipped_top, equipped_pants,
+        equipped_hat, equipped_halo, equipped_necklace, equipped_accessories,
+        is_invisible, animation_frame
       } = data;
-      
-      // 🔥 וולידציה: חייב להיות playerId ו-username תקין
-      if (!playerId || !username || username === 'שחקן') {
-        return; // התעלם משחקנים לא תקינים
+
+      if (!playerId || !username || username === 'שחקן') return;
+
+      // רישום שחקן חדש אם נדרש
+      if (!players.has(playerId)) {
+        players.set(playerId, {
+          id: playerId,
+          socketId: socket.id,
+          x: 0, y: 0,
+          direction: 'front',
+          is_moving: false,
+          username,
+          admin_level: admin_level || 'user',
+          skin_code: skin_code || 'blue',
+          equipped_hair: equipped_hair ?? null,
+          equipped_top: equipped_top ?? null,
+          equipped_pants: equipped_pants ?? null,
+          equipped_hat: equipped_hat ?? null,
+          equipped_halo: equipped_halo ?? null,
+          equipped_necklace: equipped_necklace ?? null,
+          equipped_accessories: Array.isArray(equipped_accessories) ? equipped_accessories : [],
+          is_invisible: !!is_invisible,
+          animation_frame: animation_frame || 'idle',
+          lastUpdate: 0
+        });
+
+        // מיפוי שקע→שחקן
+        SOCKET_TO_PLAYER.set(socket.id, playerId);
+
+        // שדר מיד לכל השחקנים שיש מצטרף חדש (נוכחות)
+        const joinPayload = stripForPresence(players.get(playerId));
+        io.compress(false).emit('presence:join', joinPayload);
       }
 
-      // שמירת פרטי השחקן בפעם הראשונה
-      if (!currentPlayerId) {
-        currentPlayerId = playerId;
-        currentUsername = username;
-        console.log(`🎮 ${username} (${playerId}) joined the game`);
+      // עדכון מצב (עגול קל להקטין גודל חבילה)
+      const p = players.get(playerId);
+      p.x = Math.round(Number(x) || 0);
+      p.y = Math.round(Number(y) || 0);
+      p.direction = direction || 'front';
+      p.is_moving = !!is_moving;
+      p.username = username;
+      p.admin_level = admin_level || p.admin_level;
+      p.skin_code = skin_code || p.skin_code;
+      p.equipped_hair = equipped_hair ?? p.equipped_hair;
+      p.equipped_top = equipped_top ?? p.equipped_top;
+      p.equipped_pants = equipped_pants ?? p.equipped_pants;
+      p.equipped_hat = equipped_hat ?? p.equipped_hat;
+      p.equipped_halo = equipped_halo ?? p.equipped_halo;
+      p.equipped_necklace = equipped_necklace ?? p.equipped_necklace;
+      p.equipped_accessories = Array.isArray(equipped_accessories) ? equipped_accessories : p.equipped_accessories;
+      p.is_invisible = !!is_invisible;
+      p.animation_frame = animation_frame || p.animation_frame;
+      p.lastUpdate = Date.now();
+    } catch (e) {
+      console.error('❌ move error:', e);
+    }
+  });
+
+  // --- צ'אט מיידי (ACK) ---
+  socket.on('chat:send', (data = {}, ack) => {
+    try {
+      const { playerId, username, message } = data;
+      if (!playerId || !username || !message || username === 'שחקן') {
+        if (ack) ack({ ok: false, err: 'invalid' });
+        return;
       }
-
-      // עדכון/יצירת נתוני השחקן
-      players.set(currentPlayerId, {
-        id: currentPlayerId,
-        socketId: socket.id,
-        x: Math.round(x),
-        y: Math.round(y),
-        direction: direction || 'front',
-        is_moving: is_moving || false,
-        username: username,
-        admin_level: admin_level || 'user',
-        skin_code: skin_code || 'blue',
-        equipped_hair: equipped_hair || null,
-        equipped_top: equipped_top || null,
-        equipped_pants: equipped_pants || null,
-        equipped_hat: equipped_hat || null,
-        equipped_halo: equipped_halo || null,
-        equipped_necklace: equipped_necklace || null,
-        equipped_accessories: equipped_accessories || [],
-        is_invisible: is_invisible || false,
-        animation_frame: animation_frame || 'idle',
-        lastUpdate: Date.now()
-      });
-    } catch (error) {
-      console.error('❌ Error in move handler:', error);
+      const payload = {
+        type: 'chat',
+        playerId,
+        username,
+        message: String(message).slice(0, 280),
+        serverTs: Date.now()
+      };
+      // לשולח + לכל השאר – מיידי ובלי דחיסה
+      socket.compress(false).emit('chat:new', payload);
+      socket.broadcast.compress(false).emit('chat:new', payload);
+      if (ack) ack({ ok: true, serverTs: payload.serverTs });
+    } catch (e) {
+      console.error('❌ chat:send error:', e);
+      if (ack) ack({ ok: false, err: 'server' });
     }
   });
 
-  // ========================================
-  // 💬 הודעות צ'אט
-  // ========================================
-  socket.on('bubbleMessage', (data) => {
+  // --- בועת טקסט מיידית (ACK) ---
+  socket.on('bubble:show', (data = {}, ack) => {
     try {
-      if (!data.playerId || !data.username || data.username === 'שחקן') {
-        return; // התעלם מהודעות לא תקינות
+      const { playerId, username, text, ttlMs = 3000 } = data;
+      if (!playerId || !username || !text || username === 'שחקן') {
+        if (ack) ack({ ok: false, err: 'invalid' });
+        return;
       }
-      
-      // שידור מיידי ההודעה לכל השחקנים
-      io.emit('bubbleMessage', {
-        playerId: data.playerId,
-        message: data.message,
-        username: data.username,
-        adminLevel: data.adminLevel || 'user',
-        timestamp: data.timestamp || Date.now()
-      });
-      
-      console.log(`💬 ${data.username}: ${data.message}`);
-    } catch (error) {
-      console.error('❌ Error in bubbleMessage handler:', error);
+      const payload = {
+        type: 'bubble',
+        playerId,
+        username,
+        text: String(text).slice(0, 140),
+        ttlMs: Math.min(Math.max(ttlMs, 800), 8000),
+        serverTs: Date.now()
+      };
+      socket.compress(false).emit('bubble:show', payload);
+      socket.broadcast.compress(false).emit('bubble:show', payload);
+      if (ack) ack({ ok: true, serverTs: payload.serverTs });
+    } catch (e) {
+      console.error('❌ bubble:show error:', e);
+      if (ack) ack({ ok: false, err: 'server' });
     }
   });
 
-  // ========================================
-  // 🤝 מערכת החלפות (Trades)
-  // ========================================
-  socket.on('tradeRequest', (data) => {
-    try {
-      // שידור מיידי של בקשת ההחלפה
-      io.emit('tradeRequest', {
-        tradeId: data.tradeId,
-        initiator_id: data.initiator_id,
-        receiver_id: data.receiver_id,
-        initiator_username: data.initiator_username || 'Unknown',
-        receiver_username: data.receiver_username || 'Unknown',
-        timestamp: data.timestamp || Date.now()
-      });
-      
-      console.log(`🤝 Trade request: ${data.initiator_username} → ${data.receiver_username}`);
-    } catch (error) {
-      console.error('❌ Error in tradeRequest handler:', error);
-    }
+  // --- החלפות (דוגמאות) ---
+  socket.on('tradeRequest', (d = {}) => {
+    try { io.compress(false).emit('tradeRequest', { ...d, serverTs: Date.now() }); }
+    catch (e) { console.error('❌ tradeRequest:', e); }
+  });
+  socket.on('tradeUpdate', (d = {}) => {
+    try { io.compress(false).emit('tradeUpdate', { ...d, serverTs: Date.now() }); }
+    catch (e) { console.error('❌ tradeUpdate:', e); }
   });
 
-  socket.on('tradeUpdate', (data) => {
-    try {
-      // שידור מיידי של עדכון ההחלפה
-      io.emit('tradeUpdate', {
-        tradeId: data.tradeId,
-        status: data.status,
-        timestamp: data.timestamp || Date.now()
-      });
-      
-      console.log(`🔄 Trade updated: ${data.tradeId} → ${data.status}`);
-    } catch (error) {
-      console.error('❌ Error in tradeUpdate handler:', error);
-    }
-  });
-
-  // ========================================
-  // 🔴 ניתוק
-  // ========================================
+  // --- ניתוק ---
   socket.on('disconnect', (reason) => {
-    console.log('🔴 Socket disconnected:', socket.id, 'Reason:', reason);
-    
     try {
-      // מציאת השחקן לפי socketId
-      let playerToRemove = null;
-      let playerUsername = null;
-      
-      for (const [playerId, playerData] of players.entries()) {
-        if (playerData.socketId === socket.id) {
-          playerToRemove = playerId;
-          playerUsername = playerData.username;
-          break;
-        }
+      const playerId = SOCKET_TO_PLAYER.get(socket.id);
+      if (playerId && players.has(playerId)) {
+        const username = players.get(playerId).username;
+        players.delete(playerId);
+        SOCKET_TO_PLAYER.delete(socket.id);
+        // שדר מיד שיצא
+        io.compress(false).emit('presence:leave', { playerId, username, serverTs: Date.now() });
+        // ומחק דמות
+        io.compress(false).emit('remove', playerId);
       }
-
-      if (playerToRemove) {
-        console.log(`👋 ${playerUsername} left the game`);
-        players.delete(playerToRemove);
-        
-        // שליחת הודעה לכל השחקנים שהשחקן עזב
-        io.emit('remove', playerToRemove);
-      }
-    } catch (error) {
-      console.error('❌ Error in disconnect handler:', error);
+    } catch (e) {
+      console.error('❌ disconnect:', e);
     }
+    // console.log('🔴 disconnected:', socket.id, reason);
   });
 
-  // טיפול בשגיאות
-  socket.on('error', (error) => {
-    console.error('❌ Socket error:', error);
-  });
+  socket.on('error', (e) => console.error('❌ socket error:', e));
 });
 
-// ========================================
-// 🔄 שליחת עדכוני שחקנים כל 50ms (20 FPS)
-// ========================================
+// ======== Tick (20FPS) – עדכון מיקומים בלבד ========
 setInterval(() => {
   try {
     const now = Date.now();
-    const playersArray = [];
-    
-    // ניקוי שחקנים לא פעילים (לא שלחו עדכון ב-10 שניות)
-    for (const [playerId, playerData] of players.entries()) {
-      if (now - playerData.lastUpdate > 10000) {
-        console.log(`⏰ ${playerData.username} timed out (inactive for 10s)`);
-        players.delete(playerId);
-        io.emit('remove', playerId);
-      } else {
-        // רק שחקנים עם username תקין
-        if (playerData.username && playerData.username !== 'שחקן') {
-          playersArray.push(playerData);
-        }
+    const list = [];
+
+    // נקה לא פעילים ושלח snapshot מרוכז
+    for (const [id, p] of players.entries()) {
+      if (now - p.lastUpdate > 10000) {
+        players.delete(id);
+        io.compress(false).emit('presence:leave', { playerId: id, username: p.username, serverTs: Date.now() });
+        io.compress(false).emit('remove', id);
+      } else if (p.username && p.username !== 'שחקן') {
+        list.push({ id: p.id, x: p.x, y: p.y, direction: p.direction, is_moving: p.is_moving });
       }
     }
 
-    // שליחת העדכון רק אם יש שחקנים
-    if (playersArray.length > 0) {
-      io.emit('update', playersArray);
-    }
-  } catch (error) {
-    console.error('❌ Error in update interval:', error);
+    if (list.length) io.emit('update', list);
+  } catch (e) {
+    console.error('❌ tick error:', e);
   }
-}, 50); // כל 50ms = 20 FPS
+}, TICK_MS);
 
-// ========================================
-// 🌐 דף בית
-// ========================================
-app.get('/', (req, res) => {
-  const uptimeSeconds = Math.floor(process.uptime());
-  const uptimeMinutes = Math.floor(uptimeSeconds / 60);
-  const uptimeHours = Math.floor(uptimeMinutes / 60);
-  
-  res.send(`
-    <!DOCTYPE html>
-    <html dir="rtl" lang="he">
-    <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>Touch World Realtime Server</title>
-      <style>
-        body {
-          font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-          color: white;
-          display: flex;
-          justify-content: center;
-          align-items: center;
-          min-height: 100vh;
-          margin: 0;
-          padding: 20px;
-        }
-        .container {
-          background: rgba(0, 0, 0, 0.3);
-          backdrop-filter: blur(10px);
-          border-radius: 20px;
-          padding: 40px;
-          max-width: 600px;
-          box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-        }
-        h1 {
-          font-size: 2.5em;
-          margin-bottom: 10px;
-          text-align: center;
-        }
-        .status {
-          background: rgba(0, 255, 0, 0.2);
-          border: 2px solid #00ff00;
-          border-radius: 10px;
-          padding: 15px;
-          margin: 20px 0;
-          text-align: center;
-          font-size: 1.2em;
-        }
-        .stats {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 15px;
-          margin-top: 20px;
-        }
-        .stat {
-          background: rgba(255, 255, 255, 0.1);
-          border-radius: 10px;
-          padding: 15px;
-          text-align: center;
-        }
-        .stat-value {
-          font-size: 2em;
-          font-weight: bold;
-          color: #ffd700;
-        }
-        .stat-label {
-          font-size: 0.9em;
-          opacity: 0.8;
-          margin-top: 5px;
-        }
-        .footer {
-          text-align: center;
-          margin-top: 30px;
-          opacity: 0.7;
-          font-size: 0.9em;
-        }
-      </style>
-    </head>
-    <body>
-      <div class="container">
-        <h1>✅ Touch World Server</h1>
-        <div class="status">
-          🟢 Server Running
-        </div>
-        <div class="stats">
-          <div class="stat">
-            <div class="stat-value">${players.size}</div>
-            <div class="stat-label">👥 שחקנים פעילים</div>
-          </div>
-          <div class="stat">
-            <div class="stat-value">${uptimeHours}:${(uptimeMinutes % 60).toString().padStart(2, '0')}</div>
-            <div class="stat-label">⏱️ זמן פעולה</div>
-          </div>
-          <div class="stat">
-            <div class="stat-value">v3.0</div>
-            <div class="stat-label">📦 גרסה</div>
-          </div>
-          <div class="stat">
-            <div class="stat-value">20 FPS</div>
-            <div class="stat-label">🔄 קצב עדכון</div>
-          </div>
-        </div>
-        <div class="footer">
-          🔌 Socket.IO | 💬 Real-time Chat | 🤝 Trades<br>
-          🚀 Powered by Node.js & Express
-        </div>
-      </div>
-    </body>
-    </html>
-  `);
-});
+// ======== Utils ========
+function stripForPresence(p) {
+  // מידע מספיק כדי לרנדר דמות ברגע ההצטרפות
+  return {
+    id: p.id, username: p.username,
+    x: p.x, y: p.y, direction: p.direction, is_moving: p.is_moving,
+    skin_code: p.skin_code,
+    equipped_hair: p.equipped_hair,
+    equipped_top: p.equipped_top,
+    equipped_pants: p.equipped_pants,
+    equipped_hat: p.equipped_hat,
+    equipped_halo: p.equipped_halo,
+    equipped_necklace: p.equipped_necklace,
+    equipped_accessories: p.equipped_accessories || []
+  };
+}
 
-// ========================================
-// 🚀 הפעלת השרת
-// ========================================
+// ======== HTTP ========
+app.get('/', (_, res) => res.send('✅ Touch World v2.3 – 20FPS, instant chat & bubbles, presence sync'));
+app.get('/health', (_, res) => res.json({ status: 'ok', players: players.size, ts: Date.now() }));
+
+// ======== Start ========
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, '0.0.0.0', () => {
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('🚀 Touch World Realtime Server v3.0');
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log(`📍 Server running on port ${PORT}`);
-  console.log(`🌐 Local:  http://localhost:${PORT}`);
-  console.log(`🔌 Socket.IO ready for connections`);
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-});
+server.listen(PORT, '0.0.0.0', () => console.log('🚀 Server on', PORT));
