@@ -19,8 +19,11 @@ let players = new Map();
 
 console.log('🚀 Touch World Realtime Server v4.0 Starting...');
 console.log('⚡ 60 FPS Sync | 💬 Real-time Chat | 🤝 Live Trades');
+console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
-// שידור מצב כל השחקנים - 60 FPS
+// ========================================
+// 📡 שידור מצב כל השחקנים - 60 FPS
+// ========================================
 setInterval(() => {
   if (players.size === 0) return;
   
@@ -29,9 +32,33 @@ setInterval(() => {
     p.id && p.username && p.username !== 'שחקן'
   );
   
-  // שידור לכל השחקנים
-  io.emit('update', validPlayers);
+  if (validPlayers.length > 0) {
+    // שידור לכל השחקנים
+    io.emit('update', validPlayers);
+  }
 }, 16); // 60 FPS = כל 16ms
+
+// ========================================
+// 🧹 ניקוי שחקנים לא פעילים
+// ========================================
+setInterval(() => {
+  const now = Date.now();
+  const timeout = 30000; // 30 שניות
+  
+  let removed = 0;
+  for (const [playerId, playerData] of players.entries()) {
+    if (now - playerData.lastUpdate > timeout) {
+      console.log(`⏰ Removing inactive player: ${playerData.username} (${playerId})`);
+      players.delete(playerId);
+      io.emit('remove', playerId);
+      removed++;
+    }
+  }
+  
+  if (removed > 0) {
+    console.log(`🧹 Cleaned ${removed} inactive players. Active: ${players.size}`);
+  }
+}, 10000); // כל 10 שניות
 
 io.on('connection', (socket) => {
   console.log('🟢 Socket connected:', socket.id);
@@ -166,39 +193,45 @@ io.on('connection', (socket) => {
           break;
         }
       }
-
+      
       if (playerToRemove) {
         players.delete(playerToRemove);
         
-        // שידור הסרת השחקן
+        // שידור להסרת השחקן
         io.emit('remove', playerToRemove);
         
         console.log(`👋 ${playerUsername} (${playerToRemove}) left the game`);
         console.log(`📊 Active players: ${players.size}`);
+        
+        // איפוס המזהים
+        if (currentPlayerId === playerToRemove) {
+          currentPlayerId = null;
+          currentUsername = null;
+        }
       }
     } catch (error) {
-      console.error('❌ Error in disconnect handler:', error);
+      console.error('❌ Error handling disconnect:', error);
     }
   });
 });
 
-// ניקוי שחקנים לא פעילים (fallback)
-setInterval(() => {
-  const now = Date.now();
-  const TIMEOUT = 30000; // 30 שניות
-  
-  for (const [playerId, playerData] of players.entries()) {
-    if (now - playerData.lastUpdate > TIMEOUT) {
-      console.log(`⏰ Removing inactive player: ${playerData.username}`);
-      players.delete(playerId);
-      io.emit('remove', playerId);
-    }
-  }
-}, 10000); // בדיקה כל 10 שניות
-
+// ========================================
+// 🚀 הפעלת השרת
+// ========================================
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
-  console.log(`🌐 Ready for connections!`);
-  console.log(`📡 Broadcasting at 60 FPS`);
+  console.log(`✅ Server is running on port ${PORT}`);
+  console.log(`🌐 WebSocket endpoint: ws://localhost:${PORT}`);
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 });
+
+// ========================================
+// 📊 לוג סטטיסטיקות כל דקה
+// ========================================
+setInterval(() => {
+  const playerCount = players.size;
+  if (playerCount > 0) {
+    const playerNames = Array.from(players.values()).map(p => p.username).join(', ');
+    console.log(`📊 [${new Date().toLocaleTimeString('he-IL')}] Active players (${playerCount}): ${playerNames}`);
+  }
+}, 60000); // כל דקה
