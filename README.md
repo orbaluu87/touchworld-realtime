@@ -1,34 +1,50 @@
-# 🌍 Touch World Realtime Server v2
+# Touch World Server
 
-גרסה משופרת של שרת Socket.IO לעולם Touch World.
+## התקנה
 
-## 📦 התקנה מקומית
 ```bash
 npm install
+הרצה
 npm start
-```
-
-השרת יעלה בכתובת:
-```
-http://localhost:3000
-```
+מבנה תיקיות
+touch-world-server/
+├── server.js              # קובץ ראשי
+├── package.json           # הגדרות NPM
+├── config/
+│   └── cors.js           # הגדרות CORS
+├── state/
+│   └── gameState.js      # ניהול מצב המשחק
+├── sockets/
+│   ├── playerHandlers.js # אירועי שחקנים
+│   ├── chatHandlers.js   # אירועי צ'אט
+│   └── tradeHandlers.js  # אירועי מסחר
+├── routes/
+│   └── apiRoutes.js      # API endpoints
+└── utils/
+    └── logger.js         # מערכת לוגים
+פורטים
+HTTP: 3000
+WebSocket: 3000
+בדיקות
+Health Check: http://localhost:3000/health
+Statistics: http://localhost:3000/stats
 
 ---
 
-## 🚀 העלאה ל-Render
+## 📂 מבנה תיקיות לשרת:
 
-1. היכנס ל-[render.com](https://render.com)
-2. לחץ **New → Web Service**
-3. חבר את ה-GitHub שלך
-4. העלה את הקבצים האלו (server.js + package.json + README.md)
-5. בחר:
-   - **Runtime:** Node
-   - **Build Command:** `npm install`
-   - **Start Command:** `npm start`
-6. לחץ **Create Web Service**
-7. כשתקבל "Live", השרת שלך יהיה זמין ב:
-```
-https://touchworld-realtime.onrender.com
+touch-world-server/ ├── package.json ├── server.js ├── README.md ├── config/ │ └── cors.js ├── state/ │ └── gameState.js ├── sockets/ │ ├── playerHandlers.js │ ├── chatHandlers.js │ └── tradeHandlers.js ├── routes/ │ └── apiRoutes.js └── utils/ └── logger.js
+
+
+## 🚀 הוראות הפעלה:
+
+1. צור תיקייה בשם `touch-world-server`
+2. העתק את כל הקבצים למקום המתאים
+3. הרץ:
+```bash
+npm install
+npm start
+השרת מוכן לעבודה! 🎮
 ```
 
 ---
