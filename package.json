@@ -1,5 +1,5 @@
 {
-  "name": "touch-world-server",
+  "name": "touchworld-realtime",
   "version": "2.0.0",
   "type": "module",
   "main": "server.js",
