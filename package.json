@@ -1,15 +1,20 @@
 {
   "name": "touch-world-server",
-  "version": "1.0.0",
-  "description": "Touch World Real-time Game Server",
+  "version": "2.0.0",
+  "description": "Touch World - Real-time Game Server",
   "type": "module",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "nodemon server.js"
   },
   "dependencies": {
-    "socket.io": "^4.6.1"
+    "express": "^4.18.2",
+    "socket.io": "^4.6.1",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
   },
   "engines": {
     "node": ">=18.0.0"
