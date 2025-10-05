@@ -1,14 +1,25 @@
 {
   "name": "touchworld-realtime-v2",
-  "version": "2.0.0",
-  "description": "Updated Realtime Socket.io server for Touch World with HTTPS and CORS improvements",
+  "version": "2.1.0",
+  "description": "Touch World Realtime Socket.IO Server - Fixed Ghost Players",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "render-start": "node server.js"
+    "dev": "node server.js"
   },
+  "keywords": [
+    "socket.io",
+    "realtime",
+    "multiplayer",
+    "touch-world"
+  ],
+  "author": "Touch World Team",
+  "license": "MIT",
   "dependencies": {
     "express": "^4.19.2",
     "socket.io": "^4.7.5"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
