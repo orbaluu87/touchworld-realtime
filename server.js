@@ -142,20 +142,20 @@ io.on('connection', (socket) => {
                 
                 socket.emit('currentPlayers', playersInNewArea);
 
-                console.log('🚪 Player changed area:', player.username, oldArea, '→', newAreaId);
+                console.log('🚪 Player changed area:', player.username, oldArea, '->', newAreaId);
             }
         } catch (error) {
             console.error('❌ Change area error:', error);
         }
     });
 
-    // Chat Message
+    // Bubble Message (Chat)
     socket.on('bubbleMessage', (data) => {
         try {
             const { playerId, message, username, adminLevel } = data;
             const player = players.get(playerId);
 
-            if (player) {
+            if (player && message && message.length <= 150) {
                 const messageData = {
                     playerId,
                     message,
@@ -168,7 +168,7 @@ io.on('connection', (socket) => {
                 console.log('💬', username, ':', message);
             }
         } catch (error) {
-            console.error('❌ Chat error:', error);
+            console.error('❌ Bubble message error:', error);
         }
     });
 
@@ -186,7 +186,7 @@ io.on('connection', (socket) => {
                     receiver_id,
                     initiator_username: initiator?.username
                 });
-                console.log('🤝 Trade request:', initiator?.username, '→', receiver?.username);
+                console.log('🤝 Trade request:', initiator?.username, '->', receiver?.username);
             }
         } catch (error) {
             console.error('❌ Trade request error:', error);
@@ -208,6 +208,10 @@ io.on('connection', (socket) => {
                 if (receiverSocket) io.to(receiverSocket).emit('tradeUpdate', trade);
 
                 console.log('🔄 Trade update:', tradeId, status);
+
+                if (['completed', 'cancelled'].includes(status)) {
+                    trades.delete(tradeId);
+                }
             }
         } catch (error) {
             console.error('❌ Trade update error:', error);
@@ -221,23 +225,27 @@ io.on('connection', (socket) => {
 
     // Disconnect
     socket.on('disconnect', (reason) => {
-        console.log('❌ Disconnected:', socket.id, reason);
+        console.log('❌ Player disconnected:', socket.id, reason);
 
         for (const [playerId, player] of players.entries()) {
             if (player.socketId === socket.id) {
-                socket.to(player.areaId).emit('playerLeft', { playerId });
+                socket.to(player.areaId).emit('playerLeft', { playerId: player.id });
                 players.delete(playerId);
-                console.log('👋 Player left:', player.username);
+                console.log('🚪 Removed player:', player.username);
                 break;
             }
         }
     });
+
+    socket.on('error', (error) => {
+        console.error('❌ Socket error:', socket.id, error);
+    });
 });
 
-// ============ CLEANUP TASKS ============
+// ============ CLEANUP TASK ============
 setInterval(() => {
     const now = Date.now();
-    const timeout = 120000;
+    const timeout = 120000; // 2 minutes
 
     for (const [playerId, player] of players.entries()) {
         if (now - player.lastUpdate > timeout) {
@@ -246,18 +254,30 @@ setInterval(() => {
             io.to(player.areaId).emit('playerLeft', { playerId });
         }
     }
-}, 60000);
+}, 60000); // Run every 60 seconds
+
+// ============ STATS LOGGING ============
+setInterval(() => {
+    const areaStats = {};
+    for (const player of players.values()) {
+        areaStats[player.areaId] = (areaStats[player.areaId] || 0) + 1;
+    }
+    console.log('📊 Stats:', {
+        players: players.size,
+        trades: trades.size,
+        areas: Object.keys(areaStats).length
+    });
+}, 300000); // Every 5 minutes
 
 // ============ START SERVER ============
 const PORT = process.env.PORT || 3001;
-httpServer.listen(PORT, '0.0.0.0', () => {
+httpServer.listen(PORT, () => {
     console.log(`
-╔═══════════════════════════════════╗
-║  🎮 TOUCH WORLD SERVER ONLINE     ║
-║  Port: ${PORT}                       ║
-║  Status: ✅ RUNNING                ║
-╚═══════════════════════════════════╝
+╔════════════════════════════════╗
+║  🎮 TOUCH WORLD SERVER         ║
+║  Port: ${PORT}                    ║
+║  Status: ONLINE ✅             ║
+╚════════════════════════════════╝
     `);
 });
 
-export { io, app };
