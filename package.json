@@ -1,7 +1,7 @@
 {
-  "name": "touchworld-realtime",
-  "version": "1.0.0",
-  "description": "Realtime Socket.io server for Touch World",
+  "name": "touchworld-realtime-v2",
+  "version": "2.0.0",
+  "description": "Updated Realtime Socket.io server for Touch World with HTTPS and CORS improvements",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
