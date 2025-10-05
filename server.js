@@ -14,11 +14,24 @@ const io = new Server(server, {
   transports: ['websocket', 'polling']
 });
 
-// מפת שחקנים
+// מפת שחקנים: playerId -> player data
 let players = new Map();
 
-console.log('🚀 Touch World Realtime Server v4.0 - 60 FPS Edition');
-console.log('⚡ Ultra-smooth realtime sync');
+console.log('🚀 Touch World Realtime Server v4.0 Starting...');
+console.log('⚡ 60 FPS Sync | 💬 Real-time Chat | 🤝 Live Trades');
+
+// שידור מצב כל השחקנים - 60 FPS
+setInterval(() => {
+  if (players.size === 0) return;
+  
+  // מסננים שחקנים תקינים בלבד
+  const validPlayers = Array.from(players.values()).filter(p => 
+    p.id && p.username && p.username !== 'שחקן'
+  );
+  
+  // שידור לכל השחקנים
+  io.emit('update', validPlayers);
+}, 16); // 60 FPS = כל 16ms
 
 io.on('connection', (socket) => {
   console.log('🟢 Socket connected:', socket.id);
@@ -26,7 +39,9 @@ io.on('connection', (socket) => {
   let currentPlayerId = null;
   let currentUsername = null;
 
+  // ========================================
   // 🎮 קבלת תנועת שחקן
+  // ========================================
   socket.on('move', (data) => {
     try {
       const { 
@@ -36,14 +51,19 @@ io.on('connection', (socket) => {
         is_invisible, animation_frame 
       } = data;
       
-      if (!playerId || !username || username === 'שחקן') return;
+      // 🔥 וולידציה: חייב להיות playerId ו-username תקין
+      if (!playerId || !username || username === 'שחקן') {
+        return;
+      }
 
+      // שמירת פרטי השחקן בפעם הראשונה
       if (!currentPlayerId) {
         currentPlayerId = playerId;
         currentUsername = username;
-        console.log(`🎮 ${username} (${playerId}) joined`);
+        console.log(`🎮 ${username} (${playerId}) joined the game`);
       }
 
+      // עדכון/יצירת נתוני השחקן
       players.set(currentPlayerId, {
         id: currentPlayerId,
         socketId: socket.id,
@@ -70,11 +90,16 @@ io.on('connection', (socket) => {
     }
   });
 
+  // ========================================
   // 💬 הודעות צ'אט
+  // ========================================
   socket.on('bubbleMessage', (data) => {
     try {
-      if (!data.playerId || !username || data.username === 'שחקן') return;
+      if (!data.playerId || !data.username || data.username === 'שחקן') {
+        return;
+      }
       
+      // שידור מיידי ההודעה לכל השחקנים
       io.emit('bubbleMessage', {
         playerId: data.playerId,
         message: data.message,
@@ -85,30 +110,32 @@ io.on('connection', (socket) => {
       
       console.log(`💬 ${data.username}: ${data.message}`);
     } catch (error) {
-      console.error('❌ Error in bubbleMessage:', error);
+      console.error('❌ Error in bubbleMessage handler:', error);
     }
   });
 
-  // 🤝 החלפות
+  // ========================================
+  // 🤝 מערכת החלפות (Trades)
+  // ========================================
   socket.on('tradeRequest', (data) => {
     try {
+      // שידור מיידי של בקשת ההחלפה
       io.emit('tradeRequest', {
         tradeId: data.tradeId,
         initiator_id: data.initiator_id,
         receiver_id: data.receiver_id,
-        initiator_username: data.initiator_username || 'Unknown',
-        receiver_username: data.receiver_username || 'Unknown',
         timestamp: data.timestamp || Date.now()
       });
       
-      console.log(`🤝 Trade: ${data.initiator_username} → ${data.receiver_username}`);
+      console.log(`🤝 Trade request: ${data.tradeId}`);
     } catch (error) {
-      console.error('❌ Error in tradeRequest:', error);
+      console.error('❌ Error in tradeRequest handler:', error);
     }
   });
 
   socket.on('tradeUpdate', (data) => {
     try {
+      // שידור מיידי של עדכון ההחלפה
       io.emit('tradeUpdate', {
         tradeId: data.tradeId,
         status: data.status,
@@ -117,15 +144,18 @@ io.on('connection', (socket) => {
       
       console.log(`🔄 Trade updated: ${data.tradeId} → ${data.status}`);
     } catch (error) {
-      console.error('❌ Error in tradeUpdate:', error);
+      console.error('❌ Error in tradeUpdate handler:', error);
     }
   });
 
+  // ========================================
   // 🔴 ניתוק
+  // ========================================
   socket.on('disconnect', (reason) => {
-    console.log('🔴 Disconnected:', socket.id, reason);
+    console.log('🔴 Socket disconnected:', socket.id, 'Reason:', reason);
     
     try {
+      // מציאת השחקן לפי socketId
       let playerToRemove = null;
       let playerUsername = null;
       
@@ -136,55 +166,39 @@ io.on('connection', (socket) => {
           break;
         }
       }
-      
+
       if (playerToRemove) {
         players.delete(playerToRemove);
+        
+        // שידור הסרת השחקן
         io.emit('remove', playerToRemove);
-        console.log(`👋 ${playerUsername} left (${players.size} players online)`);
+        
+        console.log(`👋 ${playerUsername} (${playerToRemove}) left the game`);
+        console.log(`📊 Active players: ${players.size}`);
       }
     } catch (error) {
-      console.error('❌ Error in disconnect:', error);
+      console.error('❌ Error in disconnect handler:', error);
     }
   });
 });
 
-// 🔥 שידור מצב כל השחקנים - 60 FPS (כל 16ms)
-setInterval(() => {
-  try {
-    if (players.size === 0) return;
-    
-    const now = Date.now();
-    const playersArray = Array.from(players.values())
-      .filter(p => (now - p.lastUpdate) < 5000); // רק שחקנים פעילים
-    
-    if (playersArray.length > 0) {
-      io.emit('update', playersArray);
-    }
-  } catch (error) {
-    console.error('❌ Broadcast error:', error);
-  }
-}, 16); // 🎯 60 FPS = 16.67ms
-
-// ניקוי שחקנים לא פעילים
+// ניקוי שחקנים לא פעילים (fallback)
 setInterval(() => {
   const now = Date.now();
-  let removed = 0;
+  const TIMEOUT = 30000; // 30 שניות
   
   for (const [playerId, playerData] of players.entries()) {
-    if (now - playerData.lastUpdate > 10000) {
+    if (now - playerData.lastUpdate > TIMEOUT) {
+      console.log(`⏰ Removing inactive player: ${playerData.username}`);
       players.delete(playerId);
       io.emit('remove', playerId);
-      removed++;
     }
   }
-  
-  if (removed > 0) {
-    console.log(`🧹 Cleaned ${removed} inactive players`);
-  }
-}, 5000);
+}, 10000); // בדיקה כל 10 שניות
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
-  console.log(`⚡ 60 FPS sync active`);
+  console.log(`🌐 Ready for connections!`);
+  console.log(`📡 Broadcasting at 60 FPS`);
 });
