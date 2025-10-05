@@ -112,4 +112,3 @@ export function setupPlayerHandlers(socket, io, gameState) {
         }
     });
 }
-}
