@@ -1,29 +1,18 @@
-// 🎮 Touch World - Real-time Game Server v3.0
-// 🚀 Production-Ready with Full Synchronization + Multi-User Support
-
 import express from 'express';
-import { createServer } from 'node:http';
+import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
-import bcrypt from 'bcrypt';
-import jwt from 'jsonwebtoken';
-import nodemailer from 'nodemailer';
-import dotenv from 'dotenv';
 
-dotenv.config();
+// ══════════════════════════════════════════════════════════
+// 🎮 TOUCH WORLD - REAL-TIME MULTIPLAYER SERVER v3.0
+// ══════════════════════════════════════════════════════════
 
-// ═══════════════════════════════════════
-// 🔧 Configuration
-// ═══════════════════════════════════════
+const app = express();
+const httpServer = createServer(app);
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-this';
-const PORT = process.env.PORT || 3000;
-const EMAIL_USER = process.env.EMAIL_USER || 'noreply@touchworld.com';
-const EMAIL_PASS = process.env.EMAIL_PASS || 'your-email-password';
-
-// ═══════════════════════════════════════
-// 🎨 Console Logger
-// ═══════════════════════════════════════
+// ══════════════════════════════════════════════════════════
+// 🎨 CONSOLE COLORS & LOGGER
+// ══════════════════════════════════════════════════════════
 
 const colors = {
     reset: '\x1b[0m',
@@ -50,396 +39,356 @@ const logger = {
     chat: (user, msg, area) => console.log(`${colors.cyan}💬 [${timestamp()}] [CHAT]${colors.reset} ${colors.bright}${user}${colors.reset} (${area}): ${msg}`),
     trade: (action, data) => console.log(`${colors.yellow}🤝 [${timestamp()}] [TRADE]${colors.reset} ${action}`, data || ''),
     connection: (action, data) => console.log(`${colors.green}🔌 [${timestamp()}] [CONNECT]${colors.reset} ${action}`, data || ''),
-    auth: (action, data) => console.log(`${colors.blue}🔐 [${timestamp()}] [AUTH]${colors.reset} ${action}`, data || ''),
+    movement: (user, from, to, area) => console.log(`${colors.blue}🚶 [${timestamp()}] [MOVE]${colors.reset} ${user} in ${area}: (${from.x},${from.y}) → (${to.x},${to.y})`),
 };
 
-// ═══════════════════════════════════════
-// 📊 In-Memory Database (Replace with real DB)
-// ═══════════════════════════════════════
+// ══════════════════════════════════════════════════════════
+// 🛡️ CORS CONFIGURATION
+// ══════════════════════════════════════════════════════════
 
-const database = {
-    users: new Map(), // username -> { username, email, password, savedAccounts: [], favoriteAccount }
-    players: new Map(), // playerId -> playerData
-    sessions: new Map(), // playerId -> { socketId, sessionId, lastUpdate }
-    trades: new Map(),
-    resetTokens: new Map() // email -> { token, expires }
-};
+const allowedOrigins = [
+    'http://localhost:5173',
+    'https://preview--copy-565f73e8.base44.app',
+    'https://copy-565f73e8.base44.app',
+    'https://base44.app',
+    /\.base44\.app$/
+];
 
-// ═══════════════════════════════════════
-// 📧 Email Service
-// ═══════════════════════════════════════
-
-const transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-        user: EMAIL_USER,
-        pass: EMAIL_PASS
-    }
-});
-
-async function sendPasswordResetEmail(email, token) {
-    const resetLink = `http://your-domain.com/reset-password?token=${token}`;
-    
-    const mailOptions = {
-        from: EMAIL_USER,
-        to: email,
-        subject: 'איפוס סיסמא - Touch World',
-        html: `
-            <div dir="rtl" style="font-family: Arial, sans-serif; text-align: right;">
-                <h2>בקשה לאיפוס סיסמא</h2>
-                <p>שלום,</p>
-                <p>קיבלנו בקשה לאיפוס הסיסמא שלך. לחץ על הקישור הבא לאיפוס:</p>
-                <a href__="${resetLink}" style="background: #00CED1; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; display: inline-block; margin: 20px 0;">
-                    אפס סיסמא
-                </a>
-                <p>הקישור תקף ל-30 דקות.</p>
-                <p>אם לא ביקשת לאפס את הסיסמא, התעלם מהודעה זו.</p>
-                <hr/>
-                <p style="color: #666; font-size: 12px;">Touch World Team</p>
-            </div>
-        `
-    };
-
-    return transporter.sendMail(mailOptions);
-}
-
-// ═══════════════════════════════════════
-// 🔐 Authentication Middleware
-// ═══════════════════════════════════════
-
-function authenticateToken(req, res, next) {
-    const token = req.headers['authorization']?.split(' ')[1];
-    
-    if (!token) {
-        return res.status(401).json({ error: 'No token provided' });
-    }
-
-    jwt.verify(token, JWT_SECRET, (err, user) => {
-        if (err) {
-            return res.status(403).json({ error: 'Invalid token' });
+const corsOptions = {
+    origin: (origin, callback) => {
+        if (!origin) return callback(null, true);
+        if (allowedOrigins.some(allowed =>
+            typeof allowed === 'string' ? allowed === origin : allowed.test(origin)
+        )) {
+            callback(null, true);
+        } else {
+            logger.warning('CORS blocked:', origin);
+            callback(null, true); // Allow anyway for development
         }
-        req.user = user;
-        next();
-    });
-}
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+};
 
-// ═══════════════════════════════════════
-// 🚀 Express App Setup
-// ═══════════════════════════════════════
-
-const app = express();
-const httpServer = createServer(app);
+// ══════════════════════════════════════════════════════════
+// 🔌 SOCKET.IO SERVER
+// ══════════════════════════════════════════════════════════
 
 const io = new Server(httpServer, {
-    cors: {
-        origin: [
-            'http://localhost:5173',
-            'https://preview--copy-565f73e8.base44.app',
-            'https://copy-565f73e8.base44.app',
-            'https://base44.app',
-            /\.base44\.app$/
-        ],
-        credentials: true
-    },
+    cors: corsOptions,
     pingTimeout: 60000,
     pingInterval: 25000,
-    transports: ['websocket', 'polling']
+    transports: ['websocket', 'polling'],
+    allowEIO3: true
 });
 
-app.use(cors({
-    origin: [
-        'http://localhost:5173',
-        'https://preview--copy-565f73e8.base44.app',
-        'https://copy-565f73e8.base44.app',
-        /\.base44\.app$/
-    ],
-    credentials: true
-}));
-
+app.use(cors(corsOptions));
 app.use(express.json());
 
-// ═══════════════════════════════════════
-// 🔐 Authentication Routes
-// ═══════════════════════════════════════
+// ══════════════════════════════════════════════════════════
+// 💾 GAME STATE
+// ══════════════════════════════════════════════════════════
 
-// Register
-app.post('/api/auth/register', async (req, res) => {
-    try {
-        const { email, username, password } = req.body;
-
-        if (!email || !username || !password) {
-            return res.status(400).json({ error: 'Missing required fields' });
-        }
-
-        // Check if user exists
-        if (database.users.has(username)) {
-            return res.status(400).json({ error: 'Username already exists' });
-        }
-
-        // Hash password
-        const hashedPassword = await bcrypt.hash(password, 10);
-
-        // Create user
-        const user = {
-            username,
-            email,
-            password: hashedPassword,
-            savedAccounts: [],
-            favoriteAccount: null,
-            createdAt: new Date().toISOString()
-        };
-
-        database.users.set(username, user);
-
-        logger.auth('NEW REGISTRATION', { username, email });
-
-        res.json({ success: true, message: 'User registered successfully' });
-    } catch (error) {
-        logger.error('Registration error:', error);
-        res.status(500).json({ error: 'Server error' });
+const gameState = {
+    players: new Map(),        // Map<playerId, playerData>
+    userSessions: new Map(),   // Map<userId, { playerId, socketId }> - for single session
+    trades: new Map(),         // Map<tradeId, tradeData>
+    maintenance: {
+        enabled: false,
+        message: 'השרת בתחזוקה. נחזור בקרוב!'
     }
+};
+
+// ══════════════════════════════════════════════════════════
+// 🔒 SECURITY HEADERS
+// ══════════════════════════════════════════════════════════
+
+app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    next();
 });
 
-// Login
-app.post('/api/auth/login', async (req, res) => {
-    try {
-        const { username, password } = req.body;
+// ══════════════════════════════════════════════════════════
+// 🌐 HTTP ROUTES
+// ══════════════════════════════════════════════════════════
 
-        const user = database.users.get(username);
-
-        if (!user) {
-            return res.status(401).json({ error: 'Invalid credentials' });
+app.get('/', (req, res) => {
+    res.send(`
+<!DOCTYPE html>
+<html dir="rtl" lang="he">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎮 Touch World Server</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
         }
-
-        const validPassword = await bcrypt.compare(password, user.password);
-
-        if (!validPassword) {
-            return res.status(401).json({ error: 'Invalid credentials' });
+        .container {
+            text-align: center;
+            background: rgba(255,255,255,0.1);
+            padding: 40px;
+            border-radius: 20px;
+            backdrop-filter: blur(10px);
         }
-
-        // Generate JWT
-        const token = jwt.sign(
-            { username: user.username, email: user.email },
-            JWT_SECRET,
-            { expiresIn: '7d' }
-        );
-
-        logger.auth('LOGIN SUCCESS', { username });
-
-        res.json({
-            success: true,
-            token,
-            user: {
-                username: user.username,
-                email: user.email,
-                savedAccounts: user.savedAccounts,
-                favoriteAccount: user.favoriteAccount
-            }
-        });
-    } catch (error) {
-        logger.error('Login error:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
+        h1 { font-size: 3em; margin: 0; }
+        p { font-size: 1.2em; margin: 10px 0; }
+        .status { color: #00ff88; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎮 Touch World Server</h1>
+        <p class="status">✅ Online & Running</p>
+        <p>Players: ${gameState.players.size}</p>
+        <p>Version: 3.0.0</p>
+    </div>
+</body>
+</html>
+    `);
 });
-
-// Save Account
-app.post('/api/auth/save-account', authenticateToken, async (req, res) => {
-    try {
-        const { accountData } = req.body;
-        const user = database.users.get(req.user.username);
-
-        if (!user) {
-            return res.status(404).json({ error: 'User not found' });
-        }
-
-        if (user.savedAccounts.length >= 3) {
-            return res.status(400).json({ error: 'Maximum 3 accounts allowed' });
-        }
-
-        user.savedAccounts.push(accountData);
-        database.users.set(req.user.username, user);
-
-        logger.auth('ACCOUNT SAVED', { username: req.user.username });
-
-        res.json({ success: true, savedAccounts: user.savedAccounts });
-    } catch (error) {
-        logger.error('Save account error:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
-
-// Set Favorite Account
-app.post('/api/auth/set-favorite', authenticateToken, async (req, res) => {
-    try {
-        const { accountIndex } = req.body;
-        const user = database.users.get(req.user.username);
-
-        if (!user) {
-            return res.status(404).json({ error: 'User not found' });
-        }
-
-        user.favoriteAccount = accountIndex;
-        database.users.set(req.user.username, user);
-
-        res.json({ success: true, favoriteAccount: user.favoriteAccount });
-    } catch (error) {
-        logger.error('Set favorite error:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
-
-// Forgot Password
-app.post('/api/auth/forgot-password', async (req, res) => {
-    try {
-        const { email, username } = req.body;
-
-        const user = Array.from(database.users.values()).find(
-            u => u.email === email && u.username === username
-        );
-
-        if (!user) {
-            return res.status(404).json({ error: 'User not found' });
-        }
-
-        // Generate reset token
-        const resetToken = jwt.sign({ email }, JWT_SECRET, { expiresIn: '30m' });
-        
-        database.resetTokens.set(email, {
-            token: resetToken,
-            expires: Date.now() + 30 * 60 * 1000
-        });
-
-        // Send email
-        await sendPasswordResetEmail(email, resetToken);
-
-        logger.auth('PASSWORD RESET REQUESTED', { email, username });
-
-        res.json({ success: true, message: 'Reset email sent' });
-    } catch (error) {
-        logger.error('Forgot password error:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
-
-// Reset Password
-app.post('/api/auth/reset-password', async (req, res) => {
-    try {
-        const { token, newPassword } = req.body;
-
-        // Verify token
-        const decoded = jwt.verify(token, JWT_SECRET);
-        const resetData = database.resetTokens.get(decoded.email);
-
-        if (!resetData || resetData.token !== token || Date.now() > resetData.expires) {
-            return res.status(400).json({ error: 'Invalid or expired token' });
-        }
-
-        // Find user and update password
-        const user = Array.from(database.users.values()).find(u => u.email === decoded.email);
-        
-        if (!user) {
-            return res.status(404).json({ error: 'User not found' });
-        }
-
-        const hashedPassword = await bcrypt.hash(newPassword, 10);
-        user.password = hashedPassword;
-        database.users.set(user.username, user);
-
-        // Remove used token
-        database.resetTokens.delete(decoded.email);
-
-        logger.auth('PASSWORD RESET SUCCESS', { email: decoded.email });
-
-        res.json({ success: true, message: 'Password reset successfully' });
-    } catch (error) {
-        logger.error('Reset password error:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
-
-// ═══════════════════════════════════════
-// 🎮 Game Routes
-// ═══════════════════════════════════════
 
 app.get('/health', (req, res) => {
     res.json({
         status: 'healthy',
-        players: database.players.size,
-        sessions: database.sessions.size,
-        trades: database.trades.size,
+        players: gameState.players.size,
+        trades: gameState.trades.size,
+        maintenance: gameState.maintenance.enabled,
         timestamp: new Date().toISOString(),
-        uptime: process.uptime()
+        uptime: process.uptime(),
+        version: '3.0.0'
     });
 });
 
-// ═══════════════════════════════════════
-// 🔌 Socket.IO - Game Synchronization
-// ═══════════════════════════════════════
+app.get('/stats', (req, res) => {
+    const areaStats = {};
+    for (const player of gameState.players.values()) {
+        areaStats[player.areaId] = (areaStats[player.areaId] || 0) + 1;
+    }
+    res.json({
+        totalPlayers: gameState.players.size,
+        activeSessions: gameState.userSessions.size,
+        areaStats,
+        activeTrades: gameState.trades.size,
+        maintenance: gameState.maintenance,
+        timestamp: new Date().toISOString()
+    });
+});
+
+// Maintenance control (protected endpoint - add auth in production)
+app.post('/maintenance', express.json(), (req, res) => {
+    const { enabled, message } = req.body;
+    
+    gameState.maintenance.enabled = enabled;
+    if (message) gameState.maintenance.message = message;
+    
+    // Notify all connected clients
+    io.emit('maintenanceUpdate', gameState.maintenance);
+    
+    logger.info(`Maintenance mode ${enabled ? 'ENABLED' : 'DISABLED'}`);
+    res.json({ success: true, maintenance: gameState.maintenance });
+});
+
+// ══════════════════════════════════════════════════════════
+// 🎯 SOCKET.IO CONNECTION & HANDLERS
+// ══════════════════════════════════════════════════════════
 
 io.on('connection', (socket) => {
-    logger.connection('NEW CONNECTION', { socketId: socket.id });
+    logger.connection('NEW CONNECTION', { socketId: socket.id, total: io.engine.clientsCount });
 
-    // Player Join
+    // ═══════════════════════════════════════════════════
+    // 👤 PLAYER JOIN
+    // ═══════════════════════════════════════════════════
     socket.on('join', (data) => {
-        const { playerId, areaId, playerData } = data;
+        try {
+            const { playerId, areaId, playerData } = data;
 
-        if (!playerId || !areaId) {
-            logger.warning('Invalid join data', data);
-            return;
+            if (!playerId || !areaId || !playerData) {
+                logger.warning('Invalid join data', { socketId: socket.id });
+                return;
+            }
+
+            // 🔒 SINGLE SESSION ENFORCEMENT
+            const existingSession = gameState.userSessions.get(playerData.user_id);
+            if (existingSession && existingSession.socketId !== socket.id) {
+                // Disconnect old session
+                const oldSocket = io.sockets.sockets.get(existingSession.socketId);
+                if (oldSocket) {
+                    oldSocket.emit('sessionReplaced', {
+                        message: 'חיבור חדש זוהה ממכשיר אחר. החיבור הישן מנותק.'
+                    });
+                    oldSocket.disconnect(true);
+                    logger.warning('Old session disconnected', {
+                        userId: playerData.user_id,
+                        oldSocket: existingSession.socketId,
+                        newSocket: socket.id
+                    });
+                }
+
+                // Remove old player
+                gameState.players.delete(existingSession.playerId);
+            }
+
+            // Create new player session
+            const newPlayer = {
+                id: playerId,
+                socketId: socket.id,
+                userId: playerData.user_id,
+                areaId: areaId,
+                x: playerData.position_x || 960,
+                y: playerData.position_y || 540,
+                direction: playerData.direction || 'front',
+                username: playerData.username,
+                admin_level: playerData.admin_level || 'user',
+                skin_code: playerData.skin_code || 'blue',
+                equipped_hair: playerData.equipped_hair,
+                equipped_top: playerData.equipped_top,
+                equipped_pants: playerData.equipped_pants,
+                equipped_hat: playerData.equipped_hat,
+                equipped_halo: playerData.equipped_halo,
+                equipped_necklace: playerData.equipped_necklace,
+                equipped_accessories: playerData.equipped_accessories || [],
+                is_invisible: playerData.is_invisible || false,
+                animation_frame: 'idle',
+                is_moving: false,
+                joinedAt: Date.now(),
+                lastUpdate: Date.now()
+            };
+
+            gameState.players.set(playerId, newPlayer);
+            gameState.userSessions.set(playerData.user_id, { playerId, socketId: socket.id });
+            
+            socket.join(areaId);
+
+            // Send current players in area to new player
+            const playersInArea = Array.from(gameState.players.values())
+                .filter(p => p.areaId === areaId && p.id !== playerId);
+            
+            socket.emit('currentPlayers', playersInArea);
+
+            // Notify others about new player
+            socket.to(areaId).emit('newPlayer', newPlayer);
+
+            logger.player('JOINED', {
+                user: playerData.username,
+                area: areaId,
+                total: gameState.players.size
+            });
+        } catch (error) {
+            logger.error('Error in join handler:', error);
         }
-
-        const newPlayer = {
-            id: playerId,
-            socketId: socket.id,
-            areaId: areaId,
-            ...playerData,
-            joinedAt: Date.now(),
-            lastUpdate: Date.now()
-        };
-
-        database.players.set(playerId, newPlayer);
-        database.sessions.set(playerId, {
-            socketId: socket.id,
-            sessionId: playerData.session_id,
-            lastUpdate: Date.now()
-        });
-
-        socket.join(areaId);
-
-        // Send current players
-        const playersInArea = Array.from(database.players.values())
-            .filter(p => p.areaId === areaId && p.id !== playerId);
-        
-        socket.emit('currentPlayers', playersInArea);
-        socket.to(areaId).emit('newPlayer', newPlayer);
-
-        logger.player('JOINED', { user: playerData.username, area: areaId, total: database.players.size });
     });
 
-    // Player Move
+    // ═══════════════════════════════════════════════════
+    // 🚶 PLAYER MOVEMENT
+    // ═══════════════════════════════════════════════════
     socket.on('move', (data) => {
-        const { playerId, x, y, direction, is_moving, animation_frame } = data;
-        const player = database.players.get(playerId);
+        try {
+            const { playerId, x, y, direction, is_moving, animation_frame } = data;
 
-        if (player) {
-            player.position_x = x;
-            player.position_y = y;
+            const player = gameState.players.get(playerId);
+            if (!player) {
+                logger.warning('Move event for unknown player:', playerId);
+                return;
+            }
+
+            const oldPos = { x: player.x, y: player.y };
+            
+            // Update player state
+            player.x = x;
+            player.y = y;
             player.direction = direction;
             player.is_moving = is_moving;
             player.animation_frame = animation_frame;
             player.lastUpdate = Date.now();
 
-            database.players.set(playerId, player);
-            socket.to(player.areaId).emit('playerMoved', player);
+            // Broadcast to others in area
+            socket.to(player.areaId).emit('playerMoved', {
+                playerId,
+                x,
+                y,
+                direction,
+                is_moving,
+                animation_frame
+            });
+
+            // Log movement (only for significant moves)
+            const distance = Math.sqrt(Math.pow(x - oldPos.x, 2) + Math.pow(y - oldPos.y, 2));
+            if (distance > 50) {
+                logger.movement(player.username, oldPos, { x, y }, player.areaId);
+            }
+        } catch (error) {
+            logger.error('Error in move handler:', error);
         }
     });
 
-    // Chat Message
-    socket.on('bubbleMessage', (data) => {
-        const { playerId, message, username, adminLevel } = data;
-        const player = database.players.get(playerId);
+    // ═══════════════════════════════════════════════════
+    // 🚪 CHANGE AREA
+    // ═══════════════════════════════════════════════════
+    socket.on('changeArea', (data) => {
+        try {
+            const { playerId, newAreaId } = data;
+            const player = gameState.players.get(playerId);
 
-        if (player) {
+            if (!player) {
+                logger.warning('Change area for unknown player:', playerId);
+                return;
+            }
+
+            const oldArea = player.areaId;
+            
+            socket.leave(oldArea);
+            socket.join(newAreaId);
+            
+            player.areaId = newAreaId;
+            player.lastUpdate = Date.now();
+
+            // Notify old area
+            socket.to(oldArea).emit('playerLeft', { playerId });
+
+            // Notify new area
+            socket.to(newAreaId).emit('playerJoined', player);
+
+            // Send current players in new area
+            const playersInNewArea = Array.from(gameState.players.values())
+                .filter(p => p.areaId === newAreaId && p.id !== playerId);
+            
+            socket.emit('currentPlayers', playersInNewArea);
+
+            logger.player('AREA CHANGE', {
+                user: player.username,
+                from: oldArea,
+                to: newAreaId
+            });
+        } catch (error) {
+            logger.error('Error in changeArea handler:', error);
+        }
+    });
+
+    // ═══════════════════════════════════════════════════
+    // 💬 CHAT / BUBBLE MESSAGE
+    // ═══════════════════════════════════════════════════
+    socket.on('bubbleMessage', (data) => {
+        try {
+            const { playerId, message, username, adminLevel } = data;
+            const player = gameState.players.get(playerId);
+
+            if (!player) {
+                logger.warning('Bubble message from unknown player:', playerId);
+                return;
+            }
+
             const messageData = {
                 playerId,
                 message,
@@ -448,97 +397,296 @@ io.on('connection', (socket) => {
                 timestamp: Date.now()
             };
 
+            // Broadcast to everyone in area
             io.to(player.areaId).emit('bubbleMessage', messageData);
+
             logger.chat(username, message, player.areaId);
+        } catch (error) {
+            logger.error('Error in bubbleMessage handler:', error);
         }
     });
 
-    // Trade Request
+    // ═══════════════════════════════════════════════════
+    // 🤝 TRADE SYSTEM
+    // ═══════════════════════════════════════════════════
     socket.on('tradeRequest', (data) => {
-        const { tradeId, initiator_id, receiver_id } = data;
-        const receiver = database.players.get(receiver_id);
+        try {
+            const { tradeId, initiator_id, receiver_id, initiator_username } = data;
+            const receiver = gameState.players.get(receiver_id);
 
-        if (receiver?.socketId) {
-            io.to(receiver.socketId).emit('tradeRequest', data);
-            logger.trade('REQUEST', { from: initiator_id, to: receiver_id, id: tradeId });
+            if (!receiver?.socketId) {
+                socket.emit('tradeError', {
+                    message: 'השחקן אינו מחובר כרגע',
+                    tradeId
+                });
+                return;
+            }
+
+            gameState.trades.set(tradeId, {
+                initiator_id,
+                receiver_id,
+                status: 'pending',
+                createdAt: Date.now()
+            });
+
+            io.to(receiver.socketId).emit('tradeRequest', {
+                tradeId,
+                initiator_id,
+                receiver_id,
+                initiator_username
+            });
+
+            logger.trade('REQUEST', {
+                from: initiator_username,
+                to: receiver.username,
+                id: tradeId
+            });
+        } catch (error) {
+            logger.error('Error in tradeRequest handler:', error);
         }
     });
 
-    // Trade Update
     socket.on('tradeUpdate', (data) => {
-        const { tradeId, status } = data;
-        database.trades.set(tradeId, { ...data, updatedAt: Date.now() });
+        try {
+            const { tradeId, status, ...tradeData } = data;
+            
+            const trade = gameState.trades.get(tradeId) || {};
+            const updatedTrade = { ...trade, ...tradeData, status, updatedAt: Date.now() };
+            gameState.trades.set(tradeId, updatedTrade);
 
-        const trade = database.trades.get(tradeId);
-        if (trade) {
-            const initiator = database.players.get(trade.initiator_id);
-            const receiver = database.players.get(trade.receiver_id);
+            // Notify both parties
+            if (updatedTrade.initiator_id && updatedTrade.receiver_id) {
+                const initiator = gameState.players.get(updatedTrade.initiator_id);
+                const receiver = gameState.players.get(updatedTrade.receiver_id);
 
-            if (initiator?.socketId) io.to(initiator.socketId).emit('tradeUpdate', trade);
-            if (receiver?.socketId) io.to(receiver.socketId).emit('tradeUpdate', trade);
+                if (initiator?.socketId) {
+                    io.to(initiator.socketId).emit('tradeUpdate', updatedTrade);
+                }
+                if (receiver?.socketId) {
+                    io.to(receiver.socketId).emit('tradeUpdate', updatedTrade);
+                }
 
-            logger.trade('UPDATE', { id: tradeId, status });
+                logger.trade('UPDATE', { id: tradeId, status });
+            }
+        } catch (error) {
+            logger.error('Error in tradeUpdate handler:', error);
         }
     });
 
-    // Disconnect
+    socket.on('tradeComplete', (data) => {
+        try {
+            const { tradeId } = data;
+            const trade = gameState.trades.get(tradeId);
+
+            if (trade) {
+                const initiator = gameState.players.get(trade.initiator_id);
+                const receiver = gameState.players.get(trade.receiver_id);
+
+                if (initiator?.socketId) {
+                    io.to(initiator.socketId).emit('tradeComplete', { tradeId, status: 'completed' });
+                }
+                if (receiver?.socketId) {
+                    io.to(receiver.socketId).emit('tradeComplete', { tradeId, status: 'completed' });
+                }
+
+                gameState.trades.delete(tradeId);
+                logger.trade('COMPLETED', { id: tradeId });
+            }
+        } catch (error) {
+            logger.error('Error in tradeComplete handler:', error);
+        }
+    });
+
+    socket.on('tradeCancel', (data) => {
+        try {
+            const { tradeId } = data;
+            const trade = gameState.trades.get(tradeId);
+
+            if (trade) {
+                const initiator = gameState.players.get(trade.initiator_id);
+                const receiver = gameState.players.get(trade.receiver_id);
+
+                if (initiator?.socketId) {
+                    io.to(initiator.socketId).emit('tradeCancel', { tradeId, status: 'cancelled' });
+                }
+                if (receiver?.socketId) {
+                    io.to(receiver.socketId).emit('tradeCancel', { tradeId, status: 'cancelled' });
+                }
+
+                gameState.trades.delete(tradeId);
+                logger.trade('CANCELLED', { id: tradeId });
+            }
+        } catch (error) {
+            logger.error('Error in tradeCancel handler:', error);
+        }
+    });
+
+    // ═══════════════════════════════════════════════════
+    // 🧹 PING/PONG (Keep-Alive)
+    // ═══════════════════════════════════════════════════
+    socket.on('ping', () => {
+        socket.emit('pong');
+    });
+
+    // ═══════════════════════════════════════════════════
+    // ❌ DISCONNECT
+    // ═══════════════════════════════════════════════════
     socket.on('disconnect', (reason) => {
         logger.connection('DISCONNECT', { socketId: socket.id, reason });
 
         let disconnectedPlayer = null;
-        for (const [playerId, player] of database.players.entries()) {
+        let userId = null;
+
+        // Find and remove player
+        for (const [playerId, player] of gameState.players.entries()) {
             if (player.socketId === socket.id) {
                 disconnectedPlayer = player;
-                database.players.delete(playerId);
-                database.sessions.delete(playerId);
-
-                socket.to(player.areaId).emit('playerLeft', { playerId: player.id });
-                logger.player('LEFT', { user: player.username, area: player.areaId });
+                userId = player.userId;
+                
+                gameState.players.delete(playerId);
+                
+                // Notify others in area
+                socket.to(player.areaId).emit('playerLeft', { playerId });
+                
+                logger.player('REMOVED', {
+                    user: player.username,
+                    area: player.areaId
+                });
                 break;
             }
         }
+
+        // Clean up session
+        if (userId) {
+            gameState.userSessions.delete(userId);
+        }
+
+        if (disconnectedPlayer) {
+            const duration = Math.round((Date.now() - disconnectedPlayer.joinedAt) / 1000);
+            logger.connection('DISCONNECTED PLAYER', {
+                user: disconnectedPlayer.username,
+                reason,
+                duration: `${duration}s`,
+                remaining: gameState.players.size
+            });
+        }
+    });
+
+    socket.on('error', (error) => {
+        logger.error(`Socket error for ${socket.id}:`, error);
     });
 });
 
-// ═══════════════════════════════════════
-// 🧹 Cleanup
-// ═══════════════════════════════════════
+// ══════════════════════════════════════════════════════════
+// 🧹 CLEANUP & MAINTENANCE
+// ══════════════════════════════════════════════════════════
 
+// Cleanup inactive players every 60 seconds
 setInterval(() => {
     const now = Date.now();
-    const timeout = 120000; // 2 minutes
+    const timeout = 120000; // 2 minutes inactivity
 
-    for (const [playerId, player] of database.players.entries()) {
+    for (const [playerId, player] of gameState.players.entries()) {
         if (now - player.lastUpdate > timeout) {
-            logger.warning('Removing inactive player', { user: player.username, id: playerId });
-            database.players.delete(playerId);
-            database.sessions.delete(playerId);
+            logger.warning('Removing inactive player', {
+                user: player.username,
+                id: playerId,
+                area: player.areaId
+            });
+            
+            gameState.players.delete(playerId);
+            gameState.userSessions.delete(player.userId);
+            
             io.to(player.areaId).emit('playerLeft', { playerId });
         }
     }
 }, 60000);
 
-// ═══════════════════════════════════════
-// 🚀 Start Server
-// ═══════════════════════════════════════
+// Log stats every 5 minutes
+setInterval(() => {
+    const areaStats = {};
+    for (const player of gameState.players.values()) {
+        areaStats[player.areaId] = (areaStats[player.areaId] || 0) + 1;
+    }
+    logger.info('📊 PERIODIC STATS', {
+        players: gameState.players.size,
+        sessions: gameState.userSessions.size,
+        trades: gameState.trades.size,
+        areas: Object.keys(areaStats).length,
+        details: areaStats
+    });
+}, 300000);
+
+// ══════════════════════════════════════════════════════════
+// ❗ ERROR HANDLING
+// ══════════════════════════════════════════════════════════
+
+app.use((err, req, res, next) => {
+    logger.error('Express caught an error:', err);
+    res.status(500).json({
+        error: 'Internal server error',
+        message: err.message
+    });
+});
+
+process.on('uncaughtException', (error) => {
+    logger.error('Uncaught Exception:', error);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+// ══════════════════════════════════════════════════════════
+// 🚀 START SERVER
+// ══════════════════════════════════════════════════════════
+
+const PORT = process.env.PORT || 3000;
 
 httpServer.listen(PORT, () => {
     console.log(`
-╔═══════════════════════════════════════════════╗
-║   🎮 TOUCH WORLD SERVER ONLINE v3.0          ║
-╠═══════════════════════════════════════════════╣
-║  Port: ${PORT}                                  ║
-║  WebSocket: ws://localhost:${PORT}              ║
-║  HTTP: http://localhost:${PORT}                 ║
-║  Health: GET /health                          ║
-╠═══════════════════════════════════════════════╣
-║  🔐 Authentication: ENABLED                   ║
-║  📧 Email Service: CONFIGURED                 ║
-║  💾 Multi-Account: UP TO 3                    ║
-║  🔄 Real-time Sync: ACTIVE                    ║
-╚═══════════════════════════════════════════════╝
+╔═══════════════════════════════════════════════════════════╗
+║                                                           ║
+║   🎮 TOUCH WORLD SERVER v3.0 - ONLINE & READY! 🎮        ║
+║                                                           ║
+╠═══════════════════════════════════════════════════════════╣
+║                                                           ║
+║  🌐 Port: ${PORT}                                           ║
+║  🔌 WebSocket: ws://localhost:${PORT}                       ║
+║  📡 HTTP: http://localhost:${PORT}                          ║
+║                                                           ║
+╠═══════════════════════════════════════════════════════════╣
+║                                                           ║
+║  📊 Routes:                                               ║
+║    GET  /         - Server info page                     ║
+║    GET  /health   - Health check                         ║
+║    GET  /stats    - Game statistics                      ║
+║    POST /maintenance - Toggle maintenance mode           ║
+║                                                           ║
+╠═══════════════════════════════════════════════════════════╣
+║                                                           ║
+║  ✨ Features:                                             ║
+║    ✅ Real-time player sync                               ║
+║    ✅ Single session enforcement                          ║
+║    ✅ Trade system                                        ║
+║    ✅ Chat/bubble messages                                ║
+║    ✅ Multi-area support                                  ║
+║    ✅ Auto cleanup inactive players                       ║
+║    ✅ Maintenance mode                                    ║
+║    ✅ Security headers                                    ║
+║    ✅ Advanced logging                                    ║
+║                                                           ║
+╠═══════════════════════════════════════════════════════════╣
+║                                                           ║
+║  🌍 Environment: ${process.env.NODE_ENV || 'development'}                          ║
+║  📅 Started: ${new Date().toLocaleString('he-IL')}          ║
+║                                                           ║
+╚═══════════════════════════════════════════════════════════╝
     `);
-    logger.success('Server started successfully');
+    
+    logger.success('🎉 Server started successfully');
+    logger.info(`🎧 Listening on port ${PORT}`);
+    logger.info(`🔗 Access at: http://localhost:${PORT}`);
 });
 
-export { io, app };
+export { io, app, gameState };
