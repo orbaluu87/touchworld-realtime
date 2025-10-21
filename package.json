@@ -1,15 +1,12 @@
 {
   "name": "touchworld-realtime",
   "version": "8.2.1",
-  "description": "Touch World Realtime Socket Server - Secure & Production Ready",
+  "description": "Touch World Realtime Socket Server",
   "main": "server.js",
   "type": "module",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js"
+    "start": "node server.js"
   },
-  "author": "Touch World Development Team",
-  "license": "ISC",
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
