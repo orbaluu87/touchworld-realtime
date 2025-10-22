@@ -1,7 +1,7 @@
 {
   "name": "touchworld-realtime",
-  "version": "8.2.1",
-  "description": "Touch World WebSocket Server (secured JWT edition)",
+  "version": "8.4.1",
+  "description": "Touch World Real-Time Multiplayer Server (with Collision & JWT Security)",
   "main": "server.js",
   "type": "module",
   "scripts": {
@@ -9,12 +9,21 @@
   },
   "dependencies": {
     "express": "^4.19.2",
-    "http": "0.0.1-security",
     "socket.io": "^4.7.5",
     "cors": "^2.8.5",
     "jsonwebtoken": "^9.0.2"
   },
   "engines": {
-    "node": ">=18.x"
-  }
+    "node": ">=18.0.0"
+  },
+  "license": "MIT",
+  "author": "Touch World Dev Team",
+  "keywords": [
+    "touchworld",
+    "socket.io",
+    "jwt",
+    "multiplayer",
+    "collision",
+    "game-server"
+  ]
 }
