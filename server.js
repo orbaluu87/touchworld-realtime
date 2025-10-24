@@ -17,41 +17,20 @@ const io = new Server(httpServer, {
 const JWT_SECRET = process.env.JWT_SECRET;
 
 if (!JWT_SECRET) {
-  console.error('❌ No JWT_SECRET');
+  console.error('❌ JWT_SECRET not set!');
   process.exit(1);
 }
 
+console.log('✅ Touch World Server v10.0.0');
+
 const connectedPlayers = new Map();
-const areaMaps = new Map();
 
-// 🚫 בדיקת collision - פשוט מלבנים!
-function isBlocked(x, y, areaId) {
-  const rects = areaMaps.get(areaId);
-  if (!Array.isArray(rects) || rects.length === 0) return false;
-
-  for (const rect of rects) {
-    if (!rect || typeof rect.x !== 'number') continue;
-
-    const left = rect.x;
-    const top = rect.y;
-    const right = rect.x + rect.width;
-    const bottom = rect.y + rect.height;
-
-    if (x >= left && x <= right && y >= top && y <= bottom) {
-      return true; // חסום!
-    }
-  }
-
-  return false;
-}
-
-// 🎮 Game Loop
 const MOVE_SPEED = 600;
 const TICK_RATE = 60;
 const TICK_INTERVAL = 1000 / TICK_RATE;
 
 function gameLoop() {
-  const movingPlayers = [];
+  const updates = [];
 
   for (const [socketId, player] of connectedPlayers) {
     if (!player.is_moving || player.destination_x === undefined) continue;
@@ -69,42 +48,32 @@ function gameLoop() {
       player.animation_frame = 'idle';
     } else {
       const moveDistance = (MOVE_SPEED * TICK_INTERVAL) / 1000;
-      const ratio = moveDistance / distance;
+      const ratio = Math.min(moveDistance / distance, 1);
 
-      const newX = player.position_x + (dx * ratio);
-      const newY = player.position_y + (dy * ratio);
+      player.position_x += dx * ratio;
+      player.position_y += dy * ratio;
 
-      if (isBlocked(newX, newY, player.current_area)) {
-        player.is_moving = false;
-        player.destination_x = undefined;
-        player.destination_y = undefined;
-        player.animation_frame = 'idle';
+      if (Math.abs(dx) > Math.abs(dy)) {
+        player.direction = dx > 0 ? 'e' : 'w';
       } else {
-        player.position_x = newX;
-        player.position_y = newY;
-
-        if (Math.abs(dx) > Math.abs(dy)) {
-          player.direction = dx > 0 ? 'e' : 'w';
-        } else {
-          player.direction = dy > 0 ? 's' : 'n';
-        }
-
-        player.animation_frame = 'walk';
+        player.direction = dy > 0 ? 's' : 'n';
       }
+
+      player.animation_frame = 'walk';
     }
 
-    movingPlayers.push({
+    updates.push({
       id: player.playerId,
-      position_x: player.position_x,
-      position_y: player.position_y,
+      position_x: Math.round(player.position_x),
+      position_y: Math.round(player.position_y),
       direction: player.direction,
       is_moving: player.is_moving,
       animation_frame: player.animation_frame
     });
   }
 
-  if (movingPlayers.length > 0) {
-    io.emit('players_moved', movingPlayers);
+  if (updates.length > 0) {
+    io.emit('players_moved', updates);
   }
 }
 
@@ -113,15 +82,25 @@ setInterval(gameLoop, TICK_INTERVAL);
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
-    version: '9.0.0',
+    version: '10.0.0',
     players: connectedPlayers.size
   });
 });
 
+app.get('/', (req, res) => {
+  res.json({ 
+    message: 'Touch World Server',
+    version: '10.0.0'
+  });
+});
+
 io.on('connection', (socket) => {
+  console.log(`🟡 Connection: ${socket.id}`);
+
   socket.on('identify', async (data) => {
     try {
       if (!data || !data.token) {
+        socket.emit('disconnect_reason', 'No token');
         socket.disconnect(true);
         return;
       }
@@ -130,15 +109,10 @@ io.on('connection', (socket) => {
       try {
         decoded = jwt.verify(data.token, JWT_SECRET);
       } catch (err) {
+        console.error(`❌ JWT fail: ${err.message}`);
+        socket.emit('disconnect_reason', 'Invalid token');
         socket.disconnect(true);
         return;
-      }
-
-      // 🗺️ שמירת collision
-      if (data.collisionMap && Array.isArray(data.collisionMap)) {
-        const areaId = data.areaId || 'area1';
-        areaMaps.set(areaId, data.collisionMap);
-        console.log(`✅ Collision: ${areaId} = ${data.collisionMap.length} rects`);
       }
 
       const playerData = {
@@ -159,11 +133,12 @@ io.on('connection', (socket) => {
       };
 
       connectedPlayers.set(socket.id, playerData);
-      console.log(`✅ ${decoded.username} joined`);
 
-      socket.emit('identify_ok', { 
-        playerId: playerData.playerId, 
-        username: playerData.username 
+      console.log(`✅ ${decoded.username} joined (${connectedPlayers.size})`);
+
+      socket.emit('identify_ok', {
+        playerId: playerData.playerId,
+        username: playerData.username
       });
 
       const otherPlayers = Array.from(connectedPlayers.values())
@@ -177,7 +152,8 @@ io.on('connection', (socket) => {
           position_x: p.position_x,
           position_y: p.position_y,
           direction: p.direction,
-          is_moving: p.is_moving
+          is_moving: p.is_moving,
+          animation_frame: p.animation_frame
         }));
       
       socket.emit('current_players', otherPlayers);
@@ -191,10 +167,12 @@ io.on('connection', (socket) => {
         position_x: playerData.position_x,
         position_y: playerData.position_y,
         direction: playerData.direction,
-        is_moving: playerData.is_moving
+        is_moving: playerData.is_moving,
+        animation_frame: playerData.animation_frame
       });
 
     } catch (error) {
+      console.error(`❌ Error: ${error.message}`);
       socket.disconnect(true);
     }
   });
@@ -203,14 +181,23 @@ io.on('connection', (socket) => {
     const player = connectedPlayers.get(socket.id);
     if (!player) return;
 
-    // 🚫 בדיקה אם היעד חסום
-    if (isBlocked(data.x, data.y, player.current_area)) {
-      return;
-    }
-
     player.destination_x = data.x;
     player.destination_y = data.y;
     player.is_moving = true;
+  });
+
+  socket.on('player_update', (data) => {
+    const player = connectedPlayers.get(socket.id);
+    if (!player) return;
+
+    if (data.equipment) {
+      player.equipment = data.equipment;
+      
+      io.emit('player_update', {
+        id: player.playerId,
+        equipment: player.equipment
+      });
+    }
   });
 
   socket.on('chat_message', (data) => {
@@ -219,8 +206,10 @@ io.on('connection', (socket) => {
 
     io.emit('chat_message', {
       id: player.playerId,
+      playerId: player.playerId,
       username: player.username,
       message: data.message,
+      text: data.message,
       timestamp: Date.now()
     });
   });
@@ -231,20 +220,54 @@ io.on('connection', (socket) => {
 
     player.current_area = data.newArea;
 
-    if (data.collisionMap && Array.isArray(data.collisionMap)) {
-      areaMaps.set(data.newArea, data.collisionMap);
-    }
-
     io.emit('player_area_changed', {
       id: player.playerId,
       current_area: data.newArea
     });
   });
 
+  socket.on('trade_request', (data) => {
+    const initiator = connectedPlayers.get(socket.id);
+    if (!initiator || !data.receiver || !data.receiver.id) return;
+
+    const receiverSocket = Array.from(connectedPlayers.entries())
+      .find(([_, p]) => p.playerId === data.receiver.id);
+
+    if (receiverSocket) {
+      const [receiverSocketId, receiver] = receiverSocket;
+      
+      io.to(receiverSocketId).emit('trade_request_received', {
+        trade_id: `trade_${Date.now()}`,
+        initiator: {
+          id: initiator.playerId,
+          username: initiator.username
+        }
+      });
+    }
+  });
+
+  socket.on('trade_accept', (data) => {
+    io.emit('trade_status_updated', {
+      id: data.trade_id,
+      status: 'started'
+    });
+  });
+
+  socket.on('trade_cancel', (data) => {
+    io.emit('trade_status_updated', {
+      id: data.trade_id,
+      status: 'cancelled',
+      reason: data.reason || 'Trade cancelled'
+    });
+  });
+
   socket.on('disconnect', () => {
     const player = connectedPlayers.get(socket.id);
+    
     if (player) {
+      console.log(`❌ ${player.username} left`);
       connectedPlayers.delete(socket.id);
+      
       io.emit('player_disconnected', player.playerId);
     }
   });
@@ -252,5 +275,5 @@ io.on('connection', (socket) => {
 
 const PORT = process.env.PORT || 10000;
 httpServer.listen(PORT, () => {
-  console.log(`🚀 Touch World v9.0.0 - port ${PORT}`);
+  console.log(`✅ Server on port ${PORT}`);
 });
