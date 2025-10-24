@@ -21,13 +21,36 @@ if (!JWT_SECRET) {
   process.exit(1);
 }
 
-console.log('✅ Touch World Server v10.0.0');
+console.log('✅ Touch World Server v11.0.0 - With Collision!');
 
 const connectedPlayers = new Map();
+const areaCollisionMaps = new Map(); // 🗺️ אחסון collision maps לפי אזור
 
 const MOVE_SPEED = 600;
 const TICK_RATE = 60;
 const TICK_INTERVAL = 1000 / TICK_RATE;
+
+// 🚫 בדיקת Collision
+function checkCollision(x, y, collisionRects) {
+  if (!Array.isArray(collisionRects) || collisionRects.length === 0) {
+    return false;
+  }
+
+  for (const rect of collisionRects) {
+    if (!rect || typeof rect.x !== 'number') continue;
+
+    const left = rect.x;
+    const top = rect.y;
+    const right = rect.x + rect.width;
+    const bottom = rect.y + rect.height;
+
+    if (x >= left && x <= right && y >= top && y <= bottom) {
+      return true; // חסום!
+    }
+  }
+
+  return false;
+}
 
 function gameLoop() {
   const updates = [];
@@ -50,16 +73,30 @@ function gameLoop() {
       const moveDistance = (MOVE_SPEED * TICK_INTERVAL) / 1000;
       const ratio = Math.min(moveDistance / distance, 1);
 
-      player.position_x += dx * ratio;
-      player.position_y += dy * ratio;
+      const newX = player.position_x + (dx * ratio);
+      const newY = player.position_y + (dy * ratio);
 
-      if (Math.abs(dx) > Math.abs(dy)) {
-        player.direction = dx > 0 ? 'e' : 'w';
+      // 🚫 בדיקת collision במהלך תנועה!
+      const collisionMap = areaCollisionMaps.get(player.current_area) || [];
+      
+      if (checkCollision(newX, newY, collisionMap)) {
+        console.log(`🚫 ${player.username} hit collision!`);
+        player.is_moving = false;
+        player.destination_x = undefined;
+        player.destination_y = undefined;
+        player.animation_frame = 'idle';
       } else {
-        player.direction = dy > 0 ? 's' : 'n';
-      }
+        player.position_x = newX;
+        player.position_y = newY;
 
-      player.animation_frame = 'walk';
+        if (Math.abs(dx) > Math.abs(dy)) {
+          player.direction = dx > 0 ? 'e' : 'w';
+        } else {
+          player.direction = dy > 0 ? 's' : 'n';
+        }
+
+        player.animation_frame = 'walk';
+      }
     }
 
     updates.push({
@@ -82,15 +119,16 @@ setInterval(gameLoop, TICK_INTERVAL);
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
-    version: '10.0.0',
-    players: connectedPlayers.size
+    version: '11.0.0',
+    players: connectedPlayers.size,
+    areas: areaCollisionMaps.size
   });
 });
 
 app.get('/', (req, res) => {
   res.json({ 
     message: 'Touch World Server',
-    version: '10.0.0'
+    version: '11.0.0'
   });
 });
 
@@ -113,6 +151,13 @@ io.on('connection', (socket) => {
         socket.emit('disconnect_reason', 'Invalid token');
         socket.disconnect(true);
         return;
+      }
+
+      // 🗺️ שמירת collision map של האזור
+      if (data.collisionMap && Array.isArray(data.collisionMap)) {
+        const areaId = data.areaId || 'area1';
+        areaCollisionMaps.set(areaId, data.collisionMap);
+        console.log(`✅ Saved collision map for ${areaId}: ${data.collisionMap.length} rects`);
       }
 
       const playerData = {
@@ -180,6 +225,25 @@ io.on('connection', (socket) => {
   socket.on('move_to', (data) => {
     const player = connectedPlayers.get(socket.id);
     if (!player) return;
+
+    // 🚫 בדיקת collision לפני תנועה!
+    const collisionMap = areaCollisionMaps.get(player.current_area) || [];
+    
+    if (checkCollision(data.x, data.y, collisionMap)) {
+      console.log(`🚫 ${player.username} tried to move to blocked area!`);
+      
+      // שלח עדכון שהשחקן לא זז
+      io.to(socket.id).emit('players_moved', [{
+        id: player.playerId,
+        position_x: Math.round(player.position_x),
+        position_y: Math.round(player.position_y),
+        direction: player.direction,
+        is_moving: false,
+        animation_frame: 'idle'
+      }]);
+      
+      return;
+    }
 
     player.destination_x = data.x;
     player.destination_y = data.y;
@@ -275,5 +339,6 @@ io.on('connection', (socket) => {
 
 const PORT = process.env.PORT || 10000;
 httpServer.listen(PORT, () => {
-  console.log(`✅ Server on port ${PORT}`);
+  console.log(`✅ Server running on port ${PORT}`);
+  console.log(`✅ Collision system active!`);
 });
