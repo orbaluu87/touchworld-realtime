@@ -1,14 +1,15 @@
+json
 {
-  "name": "touchworld-realtime",
-  "version": "8.2.0",
-  "description": "Touch World Secure Real-time Socket Server",
+  "name": "touch-world-socket-server",
+  "version": "8.0.0",
+  "description": "Unified Socket.IO server for Touch World with security and full features",
   "main": "server.js",
   "type": "module",
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js"
   },
-  "author": "Touch World Team",
+  "author": "Touch World",
   "license": "ISC",
   "dependencies": {
     "cors": "^2.8.5",
