@@ -1,36 +1,40 @@
-import express from 'npm:express@4.18.2';
-import { createServer } from 'node:http';
-import { Server } from 'npm:socket.io@4.6.1';
-import jwt from 'npm:jsonwebtoken@9.0.2';
+import express from 'express';
+import { createServer } from 'http';
+import { Server } from 'socket.io';
+import jwt from 'jsonwebtoken';
+import dotenv from 'dotenv';
+
+// טוען משתני סביבה מקובץ .env אם יש
+dotenv.config();
 
 const app = express();
 const httpServer = createServer(app);
 
 const io = new Server(httpServer, {
   cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
+    origin: '*',
+    methods: ['GET', 'POST']
   },
   transports: ['websocket', 'polling']
 });
 
-const JWT_SECRET = Deno.env.get('JWT_SECRET');
+const JWT_SECRET = process.env.JWT_SECRET;
 
 if (!JWT_SECRET) {
   console.error('❌ JWT_SECRET not configured!');
-  Deno.exit(1);
+  process.exit(1);
 }
 
 console.log('✅ Touch World Server v10.0.0 - Collision Fixed!');
 
 const connectedPlayers = new Map();
 
-// 🎮 Game Loop Configuration
+// 🎮 הגדרות תנועה
 const MOVE_SPEED = 600;
 const TICK_RATE = 60;
 const TICK_INTERVAL = 1000 / TICK_RATE;
 
-// 🚫 בדיקת Collision בשרת!
+// 🚫 בדיקת התנגשות (Collision)
 function checkCollision(x, y, collisionRects) {
   if (!Array.isArray(collisionRects) || collisionRects.length === 0) {
     return false;
@@ -52,7 +56,7 @@ function checkCollision(x, y, collisionRects) {
   return false;
 }
 
-// 🎯 Game Loop - מחשב תנועות עם collision!
+// 🎯 לולאת המשחק
 function gameLoop() {
   const movingPlayers = [];
 
@@ -74,26 +78,15 @@ function gameLoop() {
       const moveDistance = (MOVE_SPEED * TICK_INTERVAL) / 1000;
       const ratio = Math.min(moveDistance / distance, 1);
 
-      const newX = player.position_x + (dx * ratio);
-      const newY = player.position_y + (dy * ratio);
+      const newX = player.position_x + dx * ratio;
+      const newY = player.position_y + dy * ratio;
 
       if (player.collisionMap && checkCollision(newX, newY, player.collisionMap)) {
         console.log(`🚫 ${player.username} blocked by collision at (${Math.round(newX)}, ${Math.round(newY)})`);
-        
         player.is_moving = false;
         player.destination_x = undefined;
         player.destination_y = undefined;
         player.animation_frame = 'idle';
-
-        movingPlayers.push({
-          id: player.playerId,
-          position_x: Math.round(player.position_x),
-          position_y: Math.round(player.position_y),
-          direction: player.direction,
-          is_moving: false,
-          animation_frame: 'idle'
-        });
-
         continue;
       }
 
@@ -128,8 +121,8 @@ setInterval(gameLoop, TICK_INTERVAL);
 console.log(`✅ Game loop started with collision detection`);
 
 app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
+  res.json({
+    status: 'ok',
     version: '10.0.0',
     connectedPlayers: connectedPlayers.size,
     collisionEnabled: true
@@ -137,20 +130,20 @@ app.get('/health', (req, res) => {
 });
 
 app.get('/', (req, res) => {
-  res.json({ 
+  res.json({
     message: 'Touch World Real-Time Server',
     version: '10.0.0 - Collision Fixed',
     status: 'running'
   });
 });
 
+// 🎮 חיבור Socket.IO
 io.on('connection', (socket) => {
   console.log(`🟡 New connection: ${socket.id}`);
 
   socket.on('identify', async (data) => {
     try {
       if (!data || !data.token) {
-        console.error(`❌ ${socket.id}: No token provided`);
         socket.emit('disconnect_reason', 'No authentication token');
         socket.disconnect(true);
         return;
@@ -159,15 +152,13 @@ io.on('connection', (socket) => {
       let decoded;
       try {
         decoded = jwt.verify(data.token, JWT_SECRET);
-      } catch (jwtError) {
-        console.error(`❌ ${socket.id}: JWT verification failed`);
+      } catch {
         socket.emit('disconnect_reason', 'Invalid token');
         socket.disconnect(true);
         return;
       }
 
       const collisionMap = data.collisionMap || [];
-      console.log(`📍 ${decoded.username} collision map: ${collisionMap.length} rects`);
 
       const playerData = {
         socketId: socket.id,
@@ -189,8 +180,7 @@ io.on('connection', (socket) => {
       };
 
       connectedPlayers.set(socket.id, playerData);
-
-      console.log(`✅ ${decoded.username} connected with collision (Total: ${connectedPlayers.size})`);
+      console.log(`✅ ${decoded.username} connected (Total: ${connectedPlayers.size})`);
 
       socket.emit('identify_ok', {
         playerId: playerData.playerId,
@@ -211,7 +201,7 @@ io.on('connection', (socket) => {
           is_moving: p.is_moving,
           animation_frame: p.animation_frame
         }));
-      
+
       socket.emit('current_players', otherPlayers);
 
       socket.broadcast.emit('player_joined', {
@@ -227,8 +217,8 @@ io.on('connection', (socket) => {
         animation_frame: playerData.animation_frame
       });
 
-    } catch (error) {
-      console.error(`❌ Identify error:`, error);
+    } catch (err) {
+      console.error('❌ Identify error:', err);
       socket.disconnect(true);
     }
   });
@@ -240,7 +230,6 @@ io.on('connection', (socket) => {
     const { x, y } = data;
 
     if (player.collisionMap && checkCollision(x, y, player.collisionMap)) {
-      console.log(`🚫 ${player.username} tried to move to blocked area (${x}, ${y})`);
       socket.emit('move_rejected', { x, y });
       return;
     }
@@ -248,45 +237,17 @@ io.on('connection', (socket) => {
     player.destination_x = x;
     player.destination_y = y;
     player.is_moving = true;
-
-    const dx = x - player.position_x;
-    const dy = y - player.position_y;
-
-    if (Math.abs(dx) > Math.abs(dy)) {
-      player.direction = dx > 0 ? 'e' : 'w';
-    } else {
-      player.direction = dy > 0 ? 's' : 'n';
-    }
-
-    player.lastUpdate = Date.now();
-  });
-
-  socket.on('player_update', (updateData) => {
-    const player = connectedPlayers.get(socket.id);
-    if (!player) return;
-
-    if (updateData.equipment) {
-      player.equipment = updateData.equipment;
-      
-      socket.broadcast.emit('player_update', {
-        id: player.playerId,
-        equipment: player.equipment
-      });
-    }
   });
 
   socket.on('chat_message', (data) => {
     const player = connectedPlayers.get(socket.id);
-    if (!player) return;
-
-    if (!data.message || typeof data.message !== 'string') return;
+    if (!player || !data.message) return;
 
     const messageText = data.message.trim();
     if (messageText.length === 0 || messageText.length > 100) return;
 
     const chatData = {
       id: player.playerId,
-      playerId: player.playerId,
       username: player.username,
       message: messageText,
       timestamp: Date.now()
@@ -295,42 +256,17 @@ io.on('connection', (socket) => {
     io.emit('chat_message', chatData);
   });
 
-  socket.on('change_area', (data) => {
-    const player = connectedPlayers.get(socket.id);
-    if (!player) return;
-
-    player.current_area = data.newArea;
-    player.position_x = 690;
-    player.position_y = 385;
-    player.is_moving = false;
-    player.destination_x = undefined;
-    player.destination_y = undefined;
-
-    if (data.collisionMap) {
-      player.collisionMap = data.collisionMap;
-      console.log(`📍 ${player.username} changed area, collision map: ${player.collisionMap.length} rects`);
-    }
-
-    socket.broadcast.emit('player_area_changed', {
-      id: player.playerId,
-      newArea: data.newArea
-    });
-  });
-
   socket.on('disconnect', () => {
     const player = connectedPlayers.get(socket.id);
-    
     if (player) {
-      console.log(`👋 ${player.username} disconnected (Remaining: ${connectedPlayers.size - 1})`);
-      
+      console.log(`👋 ${player.username} disconnected`);
       connectedPlayers.delete(socket.id);
-      
       socket.broadcast.emit('player_disconnected', player.playerId);
     }
   });
 });
 
-const PORT = Deno.env.get('PORT') || 3001;
+const PORT = process.env.PORT || 3001;
 
 httpServer.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
