@@ -1,22 +1,25 @@
 {
   "name": "touch-world-socket-server",
-  "version": "8.0.0",
-  "description": "Unified Socket.IO server for Touch World with security and full features",
+  "version": "10.0.0",
+  "description": "Touch World real-time multiplayer Socket.IO server with JWT authentication, collision detection, and secure configuration.",
   "main": "server.js",
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "nodemon server.js"
   },
-  "author": "Touch World",
+  "author": "Or Balulu",
   "license": "ISC",
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "helmet": "^7.1.0",
-    "node-fetch": "^3.3.2",
+    "jsonwebtoken": "^9.0.2",
     "socket.io": "^4.7.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
   },
   "engines": {
     "node": ">=18.0.0"
