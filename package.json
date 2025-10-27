@@ -1,14 +1,15 @@
 {
   "name": "touchworld-server",
-  "version": "11.0.0",
+  "version": "12.0.0",
   "type": "module",
+  "description": "Touch World Realtime Server - Client-Side Collision",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
     "express": "^4.18.2",
-    "socket.io": "^4.6.1",
+    "socket.io": "^4.7.5",
     "jsonwebtoken": "^9.0.2"
   },
   "engines": {
