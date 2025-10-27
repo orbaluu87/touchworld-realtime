@@ -1,110 +1,111 @@
-import express from 'express';
-import { createServer } from 'http';
-import { Server } from 'socket.io';
-import jwt from 'jsonwebtoken';
+// ============================================================================
+// 🌍 Touch World Secure Server v12.1
+// Socket.IO + Base44 + Client-Side Zones + Optimized Performance
+// ============================================================================
 
+import express from "express";
+import { createServer } from "http";
+import { Server } from "socket.io";
+import jwt from "jsonwebtoken";
+import dotenv from "dotenv";
+
+// 🧩 טעינת משתני סביבה
+dotenv.config();
+
+// ⚙️ הגדרות כלליות
 const app = express();
 const httpServer = createServer(app);
 
 const io = new Server(httpServer, {
   cors: {
-    origin: "*",
+    origin: process.env.ALLOWED_ORIGINS?.split(",") || "*",
     methods: ["GET", "POST"],
     credentials: true
   },
-  transports: ['websocket', 'polling'],
+  transports: ["websocket", "polling"],
   pingTimeout: 60000,
   pingInterval: 25000
 });
 
+// 🔒 משתני סביבה
 const JWT_SECRET = process.env.JWT_SECRET;
 const PORT = process.env.PORT || 10000;
 
 if (!JWT_SECRET) {
-  console.error('❌ JWT_SECRET not configured!');
+  console.error("❌ JWT_SECRET not configured in .env file!");
   process.exit(1);
 }
 
-console.log('✅ Touch World Server v12.0 - Pure Client-Side Collision!');
+console.log("✅ Touch World Server v12.1 - Client-Side Collision + Zone Blocking");
 console.log(`🔑 JWT: ${JWT_SECRET.substring(0, 10)}...`);
 
 const connectedPlayers = new Map();
 
-// 🌐 HTTP Endpoints
-app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    version: '12.0',
+// 🌐 Health Check
+app.get("/health", (req, res) => {
+  res.json({
+    status: "ok",
+    version: "12.1",
     players: connectedPlayers.size,
     uptime: process.uptime()
   });
 });
 
-app.get('/', (req, res) => {
-  res.json({ 
-    message: 'Touch World Server',
-    version: '12.0 - Client-Side Collision',
-    status: 'running',
+// 🌐 Root Endpoint
+app.get("/", (req, res) => {
+  res.json({
+    message: "Touch World Server",
+    version: "12.1 - Client-Side Collision + Zone Blocking",
     players: connectedPlayers.size
   });
 });
 
-// 🔌 Socket.IO
-io.on('connection', (socket) => {
-  console.log(`🟡 CONNECTION: ${socket.id}`);
+// 🔌 Socket.IO Events
+io.on("connection", (socket) => {
+  console.log(`🟢 Connected: ${socket.id}`);
 
-  socket.on('identify', async (data) => {
+  // 🪪 זיהוי שחקן
+  socket.on("identify", (data) => {
     try {
-      console.log(`🔐 IDENTIFY: ${socket.id}`);
-      
-      if (!data || !data.token) {
-        console.error(`❌ No token from ${socket.id}`);
-        socket.emit('disconnect_reason', 'No token');
-        socket.disconnect(true);
-        return;
+      if (!data?.token) {
+        socket.emit("disconnect_reason", "No token");
+        return socket.disconnect(true);
       }
 
-      // Verify JWT
       let decoded;
       try {
         decoded = jwt.verify(data.token, JWT_SECRET);
-        console.log(`✅ Token OK: ${decoded.username}`);
       } catch (jwtError) {
-        console.error(`❌ JWT failed: ${jwtError.message}`);
-        socket.emit('disconnect_reason', 'Invalid token');
-        socket.disconnect(true);
-        return;
+        console.error(`❌ Invalid JWT: ${jwtError.message}`);
+        socket.emit("disconnect_reason", "Invalid token");
+        return socket.disconnect(true);
       }
 
       const { userId, playerId, username, admin_level } = decoded;
-      const areaId = data.areaId || 'area1';
+      const areaId = data.areaId || "area1";
 
-      // בדוק אם המשתמש כבר מחובר
-      for (const [existingSocketId, existingPlayer] of connectedPlayers) {
-        if (existingPlayer.userId === userId) {
-          console.log(`🔄 User ${username} already connected on ${existingSocketId}, disconnecting old connection`);
-          const oldSocket = io.sockets.sockets.get(existingSocketId);
+      // נתק משתמשים כפולים
+      for (const [sid, p] of connectedPlayers) {
+        if (p.userId === userId) {
+          const oldSocket = io.sockets.sockets.get(sid);
           if (oldSocket) {
-            oldSocket.emit('disconnect_reason', 'logged_in_elsewhere');
+            oldSocket.emit("disconnect_reason", "logged_in_elsewhere");
             oldSocket.disconnect(true);
           }
-          connectedPlayers.delete(existingSocketId);
+          connectedPlayers.delete(sid);
         }
       }
 
-      // צור אובייקט שחקן
       const playerData = {
         socketId: socket.id,
-        userId: userId,
-        playerId: playerId,
-        username: username,
-        admin_level: admin_level || 'user',
+        userId,
+        playerId,
+        username,
+        admin_level: admin_level || "user",
         current_area: areaId,
         position_x: 690,
         position_y: 385,
-        direction: 's',
-        is_moving: false,
-        animation_frame: 'idle',
+        direction: "s",
         equipment: {},
         is_trading: false
       };
@@ -112,223 +113,133 @@ io.on('connection', (socket) => {
       connectedPlayers.set(socket.id, playerData);
       socket.join(areaId);
 
-      console.log(`✅ ${username} joined ${areaId} (${connectedPlayers.size} total)`);
+      console.log(`✅ ${username} joined ${areaId} (${connectedPlayers.size} players)`);
 
-      // שלח אישור
-      socket.emit('identify_ok', { playerId: playerId });
-
-      // שלח רשימת שחקנים באזור
+      // שלח אישור וזימון רשימת שחקנים באזור
+      socket.emit("identify_ok", { playerId });
       const playersInArea = Array.from(connectedPlayers.values())
         .filter(p => p.current_area === areaId)
         .map(p => ({
           id: p.playerId,
           username: p.username,
           admin_level: p.admin_level,
-          current_area: p.current_area,
-          equipment: p.equipment,
-          position_x: p.position_x,
-          position_y: p.position_y,
+          x: p.position_x,
+          y: p.position_y,
           direction: p.direction,
-          is_moving: false,
-          animation_frame: 'idle',
-          is_trading: p.is_trading
+          equipment: p.equipment
         }));
+      socket.emit("current_players", playersInArea);
 
-      socket.emit('current_players', playersInArea);
-
-      // הודע לאחרים על שחקן חדש
-      socket.to(areaId).emit('player_joined', {
+      socket.to(areaId).emit("player_joined", {
         id: playerId,
-        username: username,
-        admin_level: admin_level,
-        current_area: areaId,
-        equipment: {},
-        position_x: 690,
-        position_y: 385,
-        direction: 's',
-        is_moving: false,
-        animation_frame: 'idle',
-        is_trading: false
+        username,
+        admin_level,
+        x: playerData.position_x,
+        y: playerData.position_y,
+        direction: playerData.direction
       });
 
-    } catch (error) {
-      console.error(`❌ Identify error:`, error);
+    } catch (err) {
+      console.error("❌ Identify error:", err);
       socket.disconnect(true);
     }
   });
 
-  // 📍 עדכון מיקום - רק מיקום סופי!
-  socket.on('position_update', (data) => {
+  // 📍 עדכון מיקום - רק כשיש שינוי משמעותי או סיום תנועה
+  socket.on("position_update", (data) => {
     const player = connectedPlayers.get(socket.id);
     if (!player) return;
 
-    const { x, y, direction } = data;
-    
-    player.position_x = x;
-    player.position_y = y;
-    if (direction) player.direction = direction;
+    // ⚠️ לא שולחים לשרת כל תנועה קטנה, רק מיקום סופי מהקליינט
+    player.position_x = data.x;
+    player.position_y = data.y;
+    player.direction = data.direction || player.direction;
 
-    console.log(`📍 ${player.username} moved to (${x}, ${y})`);
-
-    // שדר לכולם באזור
-    socket.to(player.current_area).emit('player_position', {
+    // משדרים לאחרים באזור בלבד
+    socket.to(player.current_area).emit("player_position", {
       id: player.playerId,
-      x: x,
-      y: y,
-      direction: direction || player.direction
+      x: player.position_x,
+      y: player.position_y,
+      direction: player.direction
     });
   });
 
   // 💬 צ'אט
-  socket.on('chat_message', (data) => {
+  socket.on("chat_message", (data) => {
     const player = connectedPlayers.get(socket.id);
-    if (!player) return;
+    if (!player || !data?.message) return;
 
-    const { message } = data;
-    if (!message || message.trim().length === 0) return;
+    const msg = data.message.trim();
+    if (msg.length === 0) return;
 
-    console.log(`💬 ${player.username}: ${message}`);
-
-    io.to(player.current_area).emit('chat_message', {
+    io.to(player.current_area).emit("chat_message", {
       id: player.playerId,
       username: player.username,
-      message: message.trim(),
+      message: msg,
       timestamp: Date.now()
     });
   });
 
-  // 🚪 שינוי אזור
-  socket.on('change_area', (data) => {
+  // 🚪 מעבר בין אזורים
+  socket.on("change_area", (data) => {
     const player = connectedPlayers.get(socket.id);
     if (!player) return;
 
     const { newArea } = data;
-    const oldArea = player.current_area;
+    if (!newArea) return;
 
-    socket.leave(oldArea);
+    socket.leave(player.current_area);
     socket.join(newArea);
+
+    console.log(`🚪 ${player.username} moved from ${player.current_area} → ${newArea}`);
     player.current_area = newArea;
 
-    console.log(`🚪 ${player.username} moved from ${oldArea} to ${newArea}`);
+    socket.emit("area_changed", { newArea });
 
-    // הודע לשחקנים באזור הישן
-    socket.to(oldArea).emit('player_area_changed', {
-      id: player.playerId,
-      newArea: newArea
-    });
-
-    // הודע לשחקנים באזור החדש
-    socket.to(newArea).emit('player_joined', {
-      id: player.playerId,
-      username: player.username,
-      admin_level: player.admin_level,
-      current_area: newArea,
-      equipment: player.equipment,
-      position_x: player.position_x,
-      position_y: player.position_y,
-      direction: player.direction,
-      is_moving: false,
-      animation_frame: 'idle',
-      is_trading: player.is_trading
-    });
-
-    // שלח לשחקן את רשימת השחקנים באזור החדש
     const playersInNewArea = Array.from(connectedPlayers.values())
-      .filter(p => p.current_area === newArea && p.socketId !== socket.id)
+      .filter(p => p.current_area === newArea)
       .map(p => ({
         id: p.playerId,
         username: p.username,
-        admin_level: p.admin_level,
-        current_area: p.current_area,
-        equipment: p.equipment,
-        position_x: p.position_x,
-        position_y: p.position_y,
-        direction: p.direction,
-        is_moving: false,
-        animation_frame: 'idle',
-        is_trading: p.is_trading
+        x: p.position_x,
+        y: p.position_y,
+        direction: p.direction
       }));
 
-    socket.emit('current_players', playersInNewArea);
+    socket.emit("current_players", playersInNewArea);
+    socket.to(newArea).emit("player_joined", {
+      id: player.playerId,
+      username: player.username,
+      x: player.position_x,
+      y: player.position_y,
+      direction: player.direction
+    });
   });
 
   // 👕 עדכון ציוד
-  socket.on('player_update', (data) => {
+  socket.on("player_update", (data) => {
     const player = connectedPlayers.get(socket.id);
-    if (!player) return;
+    if (!player || !data?.equipment) return;
 
-    if (data.equipment) {
-      player.equipment = data.equipment;
-      console.log(`👕 ${player.username} updated equipment`);
-    }
-
-    io.to(player.current_area).emit('player_update', {
+    player.equipment = data.equipment;
+    io.to(player.current_area).emit("player_update", {
       id: player.playerId,
       equipment: player.equipment
     });
   });
 
-  // 💰 בקשת החלפה
-  socket.on('trade_request', (data) => {
-    const initiator = connectedPlayers.get(socket.id);
-    if (!initiator) return;
-
-    const { receiver } = data;
-    if (!receiver || !receiver.id) return;
-
-    // מצא את ה-socket של המקבל
-    let receiverSocket = null;
-    for (const [sid, p] of connectedPlayers) {
-      if (p.playerId === receiver.id) {
-        receiverSocket = io.sockets.sockets.get(sid);
-        break;
-      }
-    }
-
-    if (receiverSocket) {
-      const tradeId = `trade_${Date.now()}_${Math.random()}`;
-      console.log(`💰 Trade request: ${initiator.username} -> ${receiver.id}`);
-
-      receiverSocket.emit('trade_request_received', {
-        trade_id: tradeId,
-        initiator: {
-          id: initiator.playerId,
-          username: initiator.username
-        }
-      });
-    }
-  });
-
-  // ✅ קבלת החלפה
-  socket.on('trade_accept', (data) => {
-    const { trade_id } = data;
-    console.log(`✅ Trade accepted: ${trade_id}`);
-    // Logic handled by client
-  });
-
-  // ❌ ביטול החלפה
-  socket.on('trade_cancel', (data) => {
-    const { trade_id, reason } = data;
-    console.log(`❌ Trade cancelled: ${trade_id} - ${reason}`);
-    // Logic handled by client
-  });
-
-  // 🔌 ניתוק
-  socket.on('disconnect', (reason) => {
+  // ❌ ניתוק
+  socket.on("disconnect", (reason) => {
     const player = connectedPlayers.get(socket.id);
     if (player) {
-      console.log(`🔴 DISCONNECT: ${player.username} (${reason})`);
-      
-      io.to(player.current_area).emit('player_disconnected', player.playerId);
+      io.to(player.current_area).emit("player_disconnected", player.playerId);
       connectedPlayers.delete(socket.id);
-      
-      console.log(`👥 ${connectedPlayers.size} players online`);
+      console.log(`🔴 ${player.username} disconnected (${reason}). Online: ${connectedPlayers.size}`);
     }
   });
 });
 
 // 🚀 Start Server
-httpServer.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`🌍 Accepting connections from all origins`);
+httpServer.listen(PORT, "0.0.0.0", () => {
+  console.log(`🚀 Touch World Server is running on port ${PORT}`);
 });
