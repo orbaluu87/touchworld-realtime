@@ -1,7 +1,7 @@
 {
   "name": "touchworld-realtime-server",
-  "version": "10.2.0",
-  "description": "TouchWorld realtime multiplayer server using Socket.IO + Base44",
+  "version": "11.0.0",
+  "description": "TouchWorld realtime multiplayer server using Socket.IO and Base44 integration",
   "type": "module",
   "main": "server.js",
   "scripts": {
@@ -12,7 +12,6 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "http": "0.0.1-security",
     "node-fetch": "^3.3.2",
     "socket.io": "^4.7.5"
   },
@@ -22,6 +21,14 @@
   "engines": {
     "node": ">=18.0.0"
   },
-  "author": "TouchWorld Team",
+  "keywords": [
+    "touchworld",
+    "socket.io",
+    "base44",
+    "multiplayer",
+    "game-server",
+    "real-time"
+  ],
+  "author": "TouchWorld Development Team",
   "license": "MIT"
 }
