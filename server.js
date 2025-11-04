@@ -1,5 +1,5 @@
-// ✅ TouchWorld Realtime Server v8.8.0
-// 🛠️ Fully Synced with Base44 + Anti-Duplicate Fix (Player Lock System)
+// ✅ TouchWorld Realtime Server v8.9.0
+// 🧩 Fully Synced with Base44 + Anti-Duplicate System + Stable Disconnect Handling
 
 import express from "express";
 import { createServer } from "http";
@@ -24,7 +24,6 @@ const io = new Server(httpServer, {
   pingInterval: 25000,
 });
 
-// 🔧 Environment setup
 const PORT = process.env.PORT || 10000;
 const JWT_SECRET = process.env.WSS_JWT_SECRET || process.env.JWT_SECRET;
 const BASE44_SERVICE_KEY = process.env.BASE44_SERVICE_KEY;
@@ -47,16 +46,16 @@ app.get("/health", (req, res) => {
   res.json({
     status: "ok",
     uptime: process.uptime(),
-    version: "8.8.0",
+    version: "8.9.0",
     players: players.size,
   });
 });
 
-// 🎮 Player tracking maps
+// 🎮 Maps for tracking players
 const players = new Map(); // socketId -> player data
-const playerIdToSocketId = new Map(); // playerId -> socketId (for duplicate prevention)
+const playerIdToSocketId = new Map(); // ✅ playerId -> socketId (מניעת כפילויות)
 
-// 🧠 Token verification
+// 🧠 אימות Token מול Base44
 async function verifyToken(token) {
   try {
     const response = await fetch(VERIFY_TOKEN_URL, {
@@ -75,10 +74,10 @@ async function verifyToken(token) {
   }
 }
 
-// 🔐 Socket authentication middleware
+// 🔒 Middleware לאימות Socket
 io.use(async (socket, next) => {
   const token = socket.handshake.auth?.token;
-  if (!token) return next(new Error("No token provided"));
+  if (!token) return next(new Error("No token"));
 
   const user = await verifyToken(token);
   if (!user || !user.player_data) return next(new Error("Invalid token"));
@@ -87,29 +86,33 @@ io.use(async (socket, next) => {
   next();
 });
 
-// 🚀 Connection logic
+// 🚀 התחברות שחקן
 io.on("connection", (socket) => {
   const user = socket.user;
-  const playerId = user.id;
-
-  // 🔒 Check if this player is already connected
-  const existingSocketId = playerIdToSocketId.get(playerId);
+  
+  // 🔒 בדיקה: האם השחקן כבר מחובר?
+  const existingSocketId = playerIdToSocketId.get(user.id);
   if (existingSocketId && existingSocketId !== socket.id) {
-    console.log(`⚠️ Duplicate connection for ${user.username}. Disconnecting old socket...`);
+    console.log(`⚠️ Duplicate connection for ${user.username}. Disconnecting old socket: ${existingSocketId}`);
+    
     const oldSocket = io.sockets.sockets.get(existingSocketId);
     if (oldSocket) {
       oldSocket.emit("disconnect_reason", "logged_in_elsewhere");
       oldSocket.disconnect(true);
     }
+    
+    // ניקוי נתונים ישנים
     players.delete(existingSocketId);
   }
 
-  // ✅ Register new connection
-  playerIdToSocketId.set(playerId, socket.id);
+  // ✅ רישום החיבור החדש
+  playerIdToSocketId.set(user.id, socket.id);
+  console.log(`✅ ${user.username} connected (Socket: ${socket.id}, Player: ${user.id})`);
 
+  // 👤 יצירת אובייקט שחקן
   const player = {
     socketId: socket.id,
-    playerId: playerId,
+    playerId: user.id,
     username: user.username,
     current_area: user.current_area || "area1",
     admin_level: user.admin_level,
@@ -134,17 +137,17 @@ io.on("connection", (socket) => {
   players.set(socket.id, player);
   socket.join(player.current_area);
 
-  console.log(`✅ ${user.username} connected (${socket.id})`);
+  // שליחת מידע לשחקן החדש
   socket.emit("identify_ok", player);
 
-  // 👥 Send list of other players in same area
+  // שליחת מידע על שחקנים קיימים
   const peers = Array.from(players.values()).filter(
     (p) => p.current_area === player.current_area && p.socketId !== socket.id
   );
   socket.emit("current_players", peers);
   socket.to(player.current_area).emit("player_joined", player);
 
-  // 🎮 Movement
+  // 🎮 תנועה
   socket.on("move_to", (data) => {
     const p = players.get(socket.id);
     if (!p) return;
@@ -154,7 +157,7 @@ io.on("connection", (socket) => {
     io.in(p.current_area).emit("players_moved", [p]);
   });
 
-  // 🔁 Player updates
+  // 🧍 עדכון שחקן
   socket.on("player_update", (data) => {
     const p = players.get(socket.id);
     if (!p) return;
@@ -162,7 +165,7 @@ io.on("connection", (socket) => {
     socket.to(p.current_area).emit("player_update", p);
   });
 
-  // 💬 Chat
+  // 💬 צ׳אט
   socket.on("chat_message", (data) => {
     const p = players.get(socket.id);
     if (!p) return;
@@ -174,7 +177,7 @@ io.on("connection", (socket) => {
     });
   });
 
-  // 🌍 Change area
+  // 🌍 מעבר אזור
   socket.on("change_area", (data) => {
     const p = players.get(socket.id);
     if (!p) return;
@@ -191,22 +194,19 @@ io.on("connection", (socket) => {
     socket.to(p.current_area).emit("player_joined", p);
   });
 
-  // 🔌 Disconnect
+  // ❌ התנתקות
   socket.on("disconnect", () => {
     const p = players.get(socket.id);
-    if (!p) return;
-
-    socket.to(p.current_area).emit("player_disconnected", p.playerId);
-
-    // 🧹 Clean up
-    players.delete(socket.id);
-    playerIdToSocketId.delete(p.playerId);
-
-    console.log(`❌ ${p.username} disconnected`);
+    if (p) {
+      playerIdToSocketId.delete(p.playerId); // ✅ ניקוי מה-Map
+      players.delete(socket.id);
+      socket.to(p.current_area).emit("player_disconnected", p.playerId);
+      console.log(`[-] ${p.username} disconnected`);
+    }
   });
 });
 
 httpServer.listen(PORT, () => {
-  console.log(`🚀 TouchWorld Server v8.8.0 running on port ${PORT}`);
+  console.log(`🚀 TouchWorld Server v8.9.0 running on port ${PORT}`);
   console.log(`🌍 https://touchworld-realtime.onrender.com`);
 });
