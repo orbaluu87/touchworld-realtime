@@ -1,5 +1,5 @@
-// ✅ TouchWorld Realtime Server v8.5.0
-// Updated for Base44 Integration (Render Node.js)
+// ✅ TouchWorld Realtime Server v8.6.0
+// Full Sync with Base44 + Fixed Duplicate Player Bug
 
 import express from "express";
 import { createServer } from "http";
@@ -13,7 +13,6 @@ dotenv.config();
 const app = express();
 const httpServer = createServer(app);
 
-// Socket.IO Configuration
 const io = new Server(httpServer, {
   cors: {
     origin: process.env.ALLOWED_ORIGINS?.split(",") || ["*"],
@@ -41,12 +40,11 @@ if (!JWT_SECRET || !BASE44_SERVICE_KEY) {
 app.use(express.json());
 app.use(cors());
 
-// 🩺 Health Check Endpoint
+// 🩺 Health Check
 app.get("/health", (req, res) => {
   const key = req.query.key || req.headers["x-health-key"];
-  if (key !== HEALTH_KEY)
-    return res.status(403).json({ status: "forbidden" });
-  res.json({ status: "ok", uptime: process.uptime(), version: "8.5.0" });
+  if (key !== HEALTH_KEY) return res.status(403).json({ status: "forbidden" });
+  res.json({ status: "ok", uptime: process.uptime(), version: "8.6.0" });
 });
 
 // 🧩 Proxy for Player Entity
@@ -83,7 +81,7 @@ app.get("/api/gamestats", async (req, res) => {
   }
 });
 
-// 🧠 Verify JWT Token via Base44
+// 🧠 Verify Token with Base44
 async function verifyToken(token) {
   try {
     const response = await fetch(VERIFY_TOKEN_URL, {
@@ -102,10 +100,10 @@ async function verifyToken(token) {
   }
 }
 
-// 🧩 Connected Players
+// 🧩 Connected Players Map
 const players = new Map();
 
-// 🔗 Middleware: Socket Authentication
+// 🔐 Authenticate every socket connection
 io.use(async (socket, next) => {
   const token = socket.handshake.auth?.token;
   if (!token) return next(new Error("No token"));
@@ -117,7 +115,7 @@ io.use(async (socket, next) => {
   next();
 });
 
-// 🎮 Socket.IO Events
+// 🎮 Socket.IO Logic
 io.on("connection", (socket) => {
   const user = socket.user;
   console.log(`✅ ${user.username} connected`);
@@ -149,14 +147,20 @@ io.on("connection", (socket) => {
   players.set(socket.id, player);
   socket.join(player.current_area);
 
+  // 🧭 Send self identification
   socket.emit("identify_ok", player);
 
-  const peers = Array.from(players.values())
-    .filter((p) => p.current_area === player.current_area && p.socketId !== socket.id);
+  // 🧍‍♂️ Send all other players in same area (excluding self)
+  const peers = Array.from(players.values()).filter(
+    (p) =>
+      p.current_area === player.current_area && p.socketId !== socket.id
+  );
   socket.emit("current_players", peers);
+
+  // 📢 Notify others in area (without duplicating)
   socket.to(player.current_area).emit("player_joined", player);
 
-  // 🕹️ Movement
+  // 🎮 Handle Movement
   socket.on("move_to", (data) => {
     const p = players.get(socket.id);
     if (!p) return;
@@ -166,7 +170,7 @@ io.on("connection", (socket) => {
     io.in(p.current_area).emit("players_moved", [p]);
   });
 
-  // 👕 Player Update
+  // 🔁 Player Updates
   socket.on("player_update", (data) => {
     const p = players.get(socket.id);
     if (!p) return;
@@ -186,17 +190,21 @@ io.on("connection", (socket) => {
     });
   });
 
-  // 🌍 Area Change
+  // 🌍 Change Area
   socket.on("change_area", (data) => {
     const p = players.get(socket.id);
     if (!p) return;
-    const old = p.current_area;
-    socket.leave(old);
+
+    const oldArea = p.current_area;
+    socket.leave(oldArea);
     p.current_area = data.newArea;
     socket.join(p.current_area);
 
-    const newPeers = Array.from(players.values())
-      .filter((pp) => pp.current_area === p.current_area && pp.socketId !== socket.id);
+    // Send updated peers for new area
+    const newPeers = Array.from(players.values()).filter(
+      (pp) =>
+        pp.current_area === p.current_area && pp.socketId !== socket.id
+    );
     socket.emit("current_players", newPeers);
     socket.to(p.current_area).emit("player_joined", p);
   });
@@ -213,6 +221,6 @@ io.on("connection", (socket) => {
 
 // 🚀 Start Server
 httpServer.listen(PORT, () => {
-  console.log(`🚀 TouchWorld Server v8.5.0 running on port ${PORT}`);
+  console.log(`🚀 TouchWorld Server v8.6.0 running on port ${PORT}`);
   console.log(`🌍 https://touchworld-realtime.onrender.com`);
 });
