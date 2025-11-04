@@ -1,5 +1,5 @@
 // ============================================================================
-// Touch World - Socket Server v9.2.0 - Movement + Admin Messages
+// Touch World - Socket Server v9.3.0 - Silent Movement Mode
 // ============================================================================
 
 import { createServer } from "http";
@@ -44,7 +44,7 @@ if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   process.exit(1);
 }
 
-const VERSION = "9.2.0";
+const VERSION = "9.3.0";
 
 // Health checks
 app.get("/healthz", (req, res) => {
@@ -83,11 +83,6 @@ const players = new Map();
 const activeTrades = new Map();
 const chatRateLimit = new Map();
 
-// ===================== MOVEMENT CONSTANTS =====================
-const MOVE_SPEED = 120; // pixels per second
-const GAME_TICK_RATE = 60; // updates per second
-const GAME_TICK_INTERVAL = 1000 / GAME_TICK_RATE;
-
 // Utility: Safe player view
 function safePlayerView(p) {
   if (!p) return null;
@@ -104,7 +99,7 @@ function safePlayerView(p) {
     direction: p.direction || "front",
     is_moving: !!p.is_moving,
     animation_frame: p.animation_frame || "idle",
-    move_speed: MOVE_SPEED,
+    move_speed: 120,
     is_trading: !!p.activeTradeId,
   };
 }
@@ -172,334 +167,286 @@ async function executeTradeOnBase44(trade) {
 }
 
 // Broadcast trade status
-function broadcastTradeStatus(tradeId) {
+function broadcastTradeStatus(tradeId, status, reason = null) {
   const trade = activeTrades.get(tradeId);
   if (!trade) return;
-  const initSid = getSocketIdByPlayerId(trade.initiatorId);
-  const recvSid = getSocketIdByPlayerId(trade.receiverId);
-  const payload = {
-    id: trade.id,
-    status: trade.status,
-    initiatorId: trade.initiatorId,
-    receiverId: trade.receiverId,
-    initiator: initSid
-      ? safePlayerView(players.get(initSid))
-      : { id: trade.initiatorId, username: "Disconnected" },
-    receiver: recvSid
-      ? safePlayerView(players.get(recvSid))
-      : { id: trade.receiverId, username: "Disconnected" },
-    initiator_offer: trade.initiator_offer,
-    receiver_offer: trade.receiver_offer,
-    chatHistory: trade.chatHistory || [],
-    reason: trade.reason || null,
-  };
-  if (initSid) io.to(initSid).emit("trade_status_updated", payload);
-  if (recvSid) io.to(recvSid).emit("trade_status_updated", payload);
+
+  const initiatorSocket = getSocketIdByPlayerId(trade.initiatorId);
+  const receiverSocket = getSocketIdByPlayerId(trade.receiverId);
+
+  const payload = { tradeId, status, reason };
+
+  if (initiatorSocket) io.to(initiatorSocket).emit("trade_status_updated", payload);
+  if (receiverSocket) io.to(receiverSocket).emit("trade_status_updated", payload);
 }
 
-// Chat rate limit
-function allowChat(socketId) {
-  const now = Date.now();
-  const bucket = chatRateLimit.get(socketId) || { ts: [], mutedUntil: 0 };
-  if (now < bucket.mutedUntil) return false;
-  bucket.ts = bucket.ts.filter((t) => now - t < 2500);
-  bucket.ts.push(now);
-  if (bucket.ts.length > 5) {
-    bucket.mutedUntil = now + 8000;
-    chatRateLimit.set(socketId, bucket);
-    return false;
-  }
-  chatRateLimit.set(socketId, bucket);
-  return true;
-}
-
-// ===================== MOVEMENT LOGIC =====================
-function updatePlayerPosition(player, deltaSeconds) {
-  if (!player.is_moving || !player.destination_x || !player.destination_y) {
-    player.is_moving = false;
-    player.animation_frame = "idle";
+// Socket.IO connection handler
+io.on("connection", async (socket) => {
+  const token = socket.handshake.auth?.token;
+  if (!token) {
+    console.log("❌ No token provided");
+    socket.emit("disconnect_reason", "no_token");
+    socket.disconnect(true);
     return;
   }
 
-  const dx = player.destination_x - player.position_x;
-  const dy = player.destination_y - player.position_y;
-  const distance = Math.sqrt(dx * dx + dy * dy);
-
-  if (distance < 2) {
-    player.position_x = player.destination_x;
-    player.position_y = player.destination_y;
-    player.is_moving = false;
-    player.animation_frame = "idle";
-    player.destination_x = null;
-    player.destination_y = null;
+  const user = await verifyTokenWithBase44(token);
+  if (!user) {
+    console.log("❌ Invalid token");
+    socket.emit("disconnect_reason", "invalid_token");
+    socket.disconnect(true);
     return;
   }
 
-  const moveDistance = MOVE_SPEED * deltaSeconds;
-  const ratio = Math.min(moveDistance / distance, 1);
-
-  player.position_x += dx * ratio;
-  player.position_y += dy * ratio;
-
-  // Update direction
-  if (Math.abs(dx) > Math.abs(dy)) {
-    player.direction = dx > 0 ? "e" : "w";
-  } else {
-    player.direction = dy > 0 ? "s" : "n";
-  }
-
-  player.animation_frame = "walk";
-}
-
-// ===================== GAME LOOP =====================
-let lastTickTime = Date.now();
-
-setInterval(() => {
-  const now = Date.now();
-  const deltaMs = now - lastTickTime;
-  const deltaSeconds = deltaMs / 1000;
-  lastTickTime = now;
-
-  // Group players by area
-  const areaUpdates = new Map();
-
-  for (const [socketId, player] of players.entries()) {
-    if (player.is_moving) {
-      updatePlayerPosition(player, deltaSeconds);
-
-      if (!areaUpdates.has(player.current_area)) {
-        areaUpdates.set(player.current_area, []);
-      }
-
-      areaUpdates.get(player.current_area).push({
-        playerId: player.playerId,
-        position_x: player.position_x,
-        position_y: player.position_y,
-        direction: player.direction,
-        is_moving: player.is_moving,
-        animation_frame: player.animation_frame,
-      });
+  // Check for duplicate connection
+  for (const [sid, p] of players.entries()) {
+    if (p.playerId === user.playerId && sid !== socket.id) {
+      console.log(`⚠️ Duplicate login detected for ${user.username}`);
+      io.to(sid).emit("disconnect_reason", "logged_in_elsewhere");
+      io.sockets.sockets.get(sid)?.disconnect(true);
+      players.delete(sid);
     }
   }
 
-  // Broadcast updates per area
-  for (const [areaId, updates] of areaUpdates.entries()) {
-    if (updates.length > 0) {
-      io.in(areaId).emit("players_moved", updates);
-    }
-  }
-}, GAME_TICK_INTERVAL);
-
-// ===================== SOCKET AUTH =====================
-io.use(async (socket, next) => {
-  console.log("🔐 Auth attempt, socket:", socket.id);
-  const auth = socket.handshake.auth || {};
-  if (!auth.token) {
-    console.error("❌ No token");
-    return next(new Error("Auth required"));
-  }
-  const user = await verifyTokenWithBase44(auth.token);
-  if (!user || !user.player_data?.id) {
-    console.error("❌ Invalid token");
-    return next(new Error("Invalid token"));
-  }
-  socket.identity = {
-    playerId: user.player_data.id,
-    userId: user.player_data.id,
-    username: user.player_data.username || "Guest",
-    current_area: user.player_data.current_area || "area1",
-    admin_level: user.player_data.admin_level || "user",
-    equipment: {
-      skin_code: user.player_data.skin_code,
-      equipped_hair: user.player_data.equipped_hair,
-      equipped_top: user.player_data.equipped_top,
-      equipped_pants: user.player_data.equipped_pants,
-      equipped_hat: user.player_data.equipped_hat,
-      equipped_necklace: user.player_data.equipped_necklace,
-      equipped_halo: user.player_data.equipped_halo,
-      equipped_accessory: user.player_data.equipped_accessory,
-    },
-    x: Number.isFinite(user.player_data.position_x)
-      ? user.player_data.position_x
-      : 600,
-    y: Number.isFinite(user.player_data.position_y)
-      ? user.player_data.position_y
-      : 400,
-  };
-  console.log("✅ Authenticated:", socket.identity.username);
-  next();
-});
-
-// ===================== SOCKET EVENTS =====================
-io.on("connection", (socket) => {
-  const id = socket.identity;
-
-  console.log(`🟢 Player connected: ${id.username} (${id.playerId})`);
-
-  const existing = getSocketIdByPlayerId(id.playerId);
-  if (existing && existing !== socket.id) {
-    console.log(`⚠️ Duplicate connection - kicking old socket ${existing}`);
-    const old = io.sockets.sockets.get(existing);
-    if (old) {
-      old.emit("disconnect_reason", "logged_in_elsewhere");
-      old.disconnect(true);
-      players.delete(existing);
-    }
-  }
-
-  const player = {
+  players.set(socket.id, {
     socketId: socket.id,
-    playerId: id.playerId,
-    username: id.username,
-    current_area: id.current_area,
-    admin_level: id.admin_level,
-    equipment: id.equipment || {},
-    position_x: id.x,
-    position_y: id.y,
-    direction: "front",
+    playerId: user.playerId,
+    userId: user.userId,
+    username: user.username,
+    admin_level: user.admin_level,
+    current_area: user.current_area || "area1",
+    equipment: user.equipment || {},
+    position_x: user.position_x || 600,
+    position_y: user.position_y || 400,
+    direction: user.direction || "front",
     is_moving: false,
     animation_frame: "idle",
-    destination_x: null,
-    destination_y: null,
-  };
+    keep_away_mode: user.keep_away_mode || false,
+    is_invisible: user.is_invisible || false,
+  });
 
-  players.set(socket.id, player);
-  socket.join(player.current_area);
-  socket.emit("identify_ok", safePlayerView(player));
+  console.log(`🟢 Player connected: ${user.username} (${user.playerId})`);
 
-  const peers = Array.from(players.values())
-    .filter((p) => p.current_area === player.current_area && p.socketId !== socket.id)
+  // Send current players in same area
+  const playersInArea = Array.from(players.values())
+    .filter((p) => p.current_area === user.current_area)
     .map(safePlayerView);
 
-  socket.emit("current_players", peers);
-  socket.to(player.current_area).emit("player_joined", safePlayerView(player));
+  socket.emit("current_players", playersInArea);
 
-  // 🚶 תנועת שחקן
+  // Broadcast to others
+  socket.broadcast.emit("player_joined", safePlayerView(players.get(socket.id)));
+
+  // ==================== MOVE_TO (ללא לוגים!) ====================
   socket.on("move_to", (data) => {
-    const p = players.get(socket.id);
-    if (!p) return;
+    const player = players.get(socket.id);
+    if (!player) return;
 
     const { x, y } = data;
-    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    if (typeof x !== "number" || typeof y !== "number") return;
 
-    p.destination_x = Math.max(0, Math.min(1380, x));
-    p.destination_y = Math.max(0, Math.min(770, y));
-    p.is_moving = true;
+    player.position_x = x;
+    player.position_y = y;
+    player.is_moving = true;
 
-    console.log(`🚶 ${p.username} moving to (${p.destination_x}, ${p.destination_y})`);
-  });
+    // ✅ שידור לכולם באותו אזור - ללא לוג!
+    const playersInArea = Array.from(players.values()).filter(
+      (p) => p.current_area === player.current_area
+    );
 
-  // 👕 עדכון ציוד
-  socket.on("player_update", (data) => {
-    const p = players.get(socket.id);
-    if (!p || !data.equipment) return;
-
-    p.equipment = data.equipment;
-    socket.to(p.current_area).emit("player_update", {
-      playerId: p.playerId,
-      equipment: p.equipment,
+    playersInArea.forEach((p) => {
+      const sid = getSocketIdByPlayerId(p.playerId);
+      if (sid) {
+        io.to(sid).emit("players_moved", [
+          {
+            id: player.playerId,
+            playerId: player.playerId,
+            position_x: player.position_x,
+            position_y: player.position_y,
+            is_moving: player.is_moving,
+            direction: player.direction,
+            animation_frame: "walk",
+          },
+        ]);
+      }
     });
-
-    console.log(`👕 ${p.username} updated equipment`);
   });
 
-  // 🗺️ שינוי אזור
-  socket.on("change_area", (data) => {
-    const p = players.get(socket.id);
-    if (!p || !data.newArea) return;
+  // ==================== PLAYER_UPDATE ====================
+  socket.on("player_update", (data) => {
+    const player = players.get(socket.id);
+    if (!player) return;
 
-    const oldArea = p.current_area;
-    p.current_area = data.newArea;
-    p.is_moving = false;
-    p.destination_x = null;
-    p.destination_y = null;
+    if (data.equipment) player.equipment = data.equipment;
+    if (data.direction) player.direction = data.direction;
 
-    socket.leave(oldArea);
-    socket.join(data.newArea);
-
-    socket.to(oldArea).emit("player_disconnected", p.playerId);
-    socket.to(data.newArea).emit("player_joined", safePlayerView(p));
-
-    const peers = Array.from(players.values())
-      .filter((other) => other.current_area === data.newArea && other.socketId !== socket.id)
-      .map(safePlayerView);
-
-    socket.emit("current_players", peers);
-
-    console.log(`🗺️ ${p.username} moved from ${oldArea} to ${data.newArea}`);
+    socket.broadcast.emit("player_update", {
+      id: player.playerId,
+      playerId: player.playerId,
+      ...data,
+    });
   });
 
-  // 💬 הודעות מערכת ממנהלים
-  socket.on("admin_system_message", (messageData) => {
-    const p = players.get(socket.id);
-    if (!p) return;
+  // ==================== CHAT_MESSAGE ====================
+  socket.on("chat_message", (data) => {
+    const player = players.get(socket.id);
+    if (!player) return;
 
-    if (p.admin_level !== "admin" && p.admin_level !== "senior_touch") {
-      console.log(`⚠️ Non-admin tried to send system message: ${p.username}`);
+    const now = Date.now();
+    const userRateKey = `${player.playerId}_chat`;
+    const lastMessageTime = chatRateLimit.get(userRateKey) || 0;
+
+    if (now - lastMessageTime < 1000) {
+      socket.emit("chat_rate_limited");
       return;
     }
 
-    console.log(`📢 Admin message from ${messageData.sender_name} (${messageData.target_area})`);
+    chatRateLimit.set(userRateKey, now);
 
-    const systemMessage = {
-      id: "system",
-      playerId: "system",
-      username: messageData.sender_name,
-      admin_level: messageData.sender_level,
-      message: messageData.message,
-      timestamp: messageData.timestamp || Date.now(),
+    const chatPayload = {
+      id: player.playerId,
+      playerId: player.playerId,
+      username: player.username,
+      admin_level: player.admin_level,
+      message: data.message,
+      timestamp: now,
     };
 
-    if (messageData.target_area === "current") {
-      const targetArea = p.current_area;
-      for (const [sid, player] of players) {
-        if (player.current_area === targetArea) {
-          io.to(sid).emit("chat_message", systemMessage);
-        }
-      }
-      console.log(`✅ Sent system message to area: ${targetArea}`);
-    } else {
-      io.emit("chat_message", systemMessage);
-      console.log(`✅ Sent system message to all players`);
-    }
+    console.log(`💬 [${player.current_area}] ${player.username}: ${data.message}`);
+
+    // שידור לכולם באותו אזור
+    const playersInArea = Array.from(players.values()).filter(
+      (p) => p.current_area === player.current_area
+    );
+
+    playersInArea.forEach((p) => {
+      const sid = getSocketIdByPlayerId(p.playerId);
+      if (sid) io.to(sid).emit("chat_message", chatPayload);
+    });
   });
 
-  // 💬 צ׳אט רגיל
-  socket.on("chat_message", (data = {}) => {
-    const p = players.get(socket.id);
-    if (!p) return;
-    const msg = (data.message ?? data.text ?? "").toString().trim();
-    if (!msg) return;
-    if (!allowChat(socket.id)) {
-      socket.emit("chat_rate_limited", { until: Date.now() + 8000 });
+  // ==================== ADMIN_SYSTEM_MESSAGE ====================
+  socket.on("admin_system_message", (data) => {
+    const player = players.get(socket.id);
+    if (!player) return;
+
+    // רק מנהלים
+    if (player.admin_level !== "admin" && player.admin_level !== "senior_touch") {
       return;
     }
-    io.in(p.current_area).emit("chat_message", {
-      id: p.playerId,
-      playerId: p.playerId,
-      username: p.username,
-      admin_level: p.admin_level,
-      message: msg,
+
+    console.log(`📢 Admin message from ${player.username}: ${data.message}`);
+
+    // שידור לכולם
+    io.emit("chat_message", {
+      id: "system",
+      playerId: "system",
+      username: player.username,
+      admin_level: player.admin_level,
+      message: data.message,
       timestamp: Date.now(),
     });
-    console.log(`💬 [${p.current_area}] ${p.username}: ${msg}`);
   });
 
-  // ניתוק שחקן
-  socket.on("disconnect", (reason) => {
-    const p = players.get(socket.id);
-    if (!p) return;
-    console.log(`🔴 ${p.username} (${p.playerId}) disconnected: ${reason}`);
-    socket.to(p.current_area).emit("player_disconnected", p.playerId);
+  // ==================== CHANGE_AREA ====================
+  socket.on("change_area", (data) => {
+    const player = players.get(socket.id);
+    if (!player) return;
+
+    const { newArea } = data;
+    const oldArea = player.current_area;
+
+    player.current_area = newArea;
+
+    console.log(`🚪 ${player.username} moved: ${oldArea} → ${newArea}`);
+
+    // הודעה לאזור הישן
+    socket.broadcast.emit("player_area_changed", {
+      playerId: player.playerId,
+      oldArea,
+      newArea,
+    });
+
+    // שלח רשימת שחקנים באזור החדש
+    const playersInNewArea = Array.from(players.values())
+      .filter((p) => p.current_area === newArea)
+      .map(safePlayerView);
+
+    socket.emit("current_players", playersInNewArea);
+
+    // הודע לשאר באזור החדש
+    socket.broadcast.emit("player_joined", safePlayerView(player));
+  });
+
+  // ==================== TRADE SYSTEM ====================
+  socket.on("trade_request", (data) => {
+    const initiator = players.get(socket.id);
+    if (!initiator) return;
+
+    const receiverSocketId = getSocketIdByPlayerId(data.receiver.id);
+    if (!receiverSocketId) return;
+
+    const receiver = players.get(receiverSocketId);
+    if (!receiver) return;
+
+    const tradeId = `trade_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    const trade = {
+      id: tradeId,
+      initiatorId: initiator.playerId,
+      receiverId: receiver.playerId,
+      initiator_offer: { items: [], coins: 0, gems: 0 },
+      receiver_offer: { items: [], coins: 0, gems: 0 },
+      status: "pending",
+    };
+
+    activeTrades.set(tradeId, trade);
+
+    console.log(`🔄 Trade request: ${initiator.username} → ${receiver.username}`);
+
+    io.to(receiverSocketId).emit("trade_request_received", {
+      trade_id: tradeId,
+      initiator: safePlayerView(initiator),
+    });
+  });
+
+  socket.on("trade_accept", (data) => {
+    const { trade_id } = data;
+    const trade = activeTrades.get(trade_id);
+    if (!trade) return;
+
+    trade.status = "started";
+    broadcastTradeStatus(trade_id, "started");
+
+    console.log(`✅ Trade accepted: ${trade_id}`);
+  });
+
+  socket.on("trade_cancel", (data) => {
+    const { trade_id, reason } = data;
+    const trade = activeTrades.get(trade_id);
+    if (!trade) return;
+
+    trade.status = "cancelled";
+    broadcastTradeStatus(trade_id, "cancelled", reason);
+    activeTrades.delete(trade_id);
+
+    console.log(`❌ Trade cancelled: ${trade_id}`);
+  });
+
+  // ==================== DISCONNECT ====================
+  socket.on("disconnect", () => {
+    const player = players.get(socket.id);
+    if (!player) return;
+
+    console.log(`❌ Player disconnected: ${player.username}`);
+
+    socket.broadcast.emit("player_disconnected", player.playerId);
     players.delete(socket.id);
   });
 });
 
-// ===================== SERVER START =====================
+// Start server
 httpServer.listen(PORT, () => {
-  console.log(`\n${"★".repeat(60)}`);
   console.log(`🚀 Touch World Server v${VERSION} - Port ${PORT}`);
   console.log(`🌍 https://touchworld-realtime.onrender.com`);
-  console.log(`⚡ Game loop running at ${GAME_TICK_RATE} ticks/sec`);
-  console.log(`${"★".repeat(60)}\n`);
 });
