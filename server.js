@@ -1,6 +1,5 @@
-// ✅ TouchWorld Realtime Server v8.7.0
-// 🔒 Fixed Duplicate Player Bug - Only ONE connection per player!
-// ⚡ Fully Synced with Base44 API + JWT + Socket.IO
+// ✅ TouchWorld Realtime Server v8.8.0
+// 🛠️ Fully Synced with Base44 + Anti-Duplicate Fix (Player Lock System)
 
 import express from "express";
 import { createServer } from "http";
@@ -25,6 +24,7 @@ const io = new Server(httpServer, {
   pingInterval: 25000,
 });
 
+// 🔧 Environment setup
 const PORT = process.env.PORT || 10000;
 const JWT_SECRET = process.env.WSS_JWT_SECRET || process.env.JWT_SECRET;
 const BASE44_SERVICE_KEY = process.env.BASE44_SERVICE_KEY;
@@ -47,46 +47,16 @@ app.get("/health", (req, res) => {
   res.json({
     status: "ok",
     uptime: process.uptime(),
-    version: "8.7.0",
+    version: "8.8.0",
     players: players.size,
   });
 });
 
-// 🧩 Proxy for Player Entity
-app.get("/api/player", async (req, res) => {
-  try {
-    const response = await fetch(`${BASE44_API_URL}/entities/Player`, {
-      headers: {
-        Authorization: `Bearer ${BASE44_SERVICE_KEY}`,
-        "Content-Type": "application/json",
-      },
-    });
-    const data = await response.json();
-    res.json(data);
-  } catch (err) {
-    console.error("❌ Error fetching Player:", err);
-    res.status(500).json({ error: "Failed to fetch Player" });
-  }
-});
+// 🎮 Player tracking maps
+const players = new Map(); // socketId -> player data
+const playerIdToSocketId = new Map(); // playerId -> socketId (for duplicate prevention)
 
-// 🧩 Proxy for GameStats Entity
-app.get("/api/gamestats", async (req, res) => {
-  try {
-    const response = await fetch(`${BASE44_API_URL}/entities/GameStats`, {
-      headers: {
-        Authorization: `Bearer ${BASE44_SERVICE_KEY}`,
-        "Content-Type": "application/json",
-      },
-    });
-    const data = await response.json();
-    res.json(data);
-  } catch (err) {
-    console.error("❌ Error fetching GameStats:", err);
-    res.status(500).json({ error: "Failed to fetch GameStats" });
-  }
-});
-
-// 🧠 Verify Token with Base44
+// 🧠 Token verification
 async function verifyToken(token) {
   try {
     const response = await fetch(VERIFY_TOKEN_URL, {
@@ -105,28 +75,27 @@ async function verifyToken(token) {
   }
 }
 
-// 🎮 Player Tracking
-const players = new Map(); // socketId -> playerData
-const playerIdToSocketId = new Map(); // playerId -> socketId
-
-// 🔐 Auth middleware
+// 🔐 Socket authentication middleware
 io.use(async (socket, next) => {
   const token = socket.handshake.auth?.token;
   if (!token) return next(new Error("No token provided"));
+
   const user = await verifyToken(token);
   if (!user || !user.player_data) return next(new Error("Invalid token"));
+
   socket.user = user.player_data;
   next();
 });
 
-// 🚀 Main socket logic
+// 🚀 Connection logic
 io.on("connection", (socket) => {
   const user = socket.user;
+  const playerId = user.id;
 
-  // 🔒 Check for duplicate connection
-  const existingSocketId = playerIdToSocketId.get(user.id);
+  // 🔒 Check if this player is already connected
+  const existingSocketId = playerIdToSocketId.get(playerId);
   if (existingSocketId && existingSocketId !== socket.id) {
-    console.log(`⚠️ Duplicate connection for ${user.username}. Disconnecting old socket.`);
+    console.log(`⚠️ Duplicate connection for ${user.username}. Disconnecting old socket...`);
     const oldSocket = io.sockets.sockets.get(existingSocketId);
     if (oldSocket) {
       oldSocket.emit("disconnect_reason", "logged_in_elsewhere");
@@ -135,11 +104,12 @@ io.on("connection", (socket) => {
     players.delete(existingSocketId);
   }
 
-  console.log(`✅ ${user.username} connected (${socket.id})`);
+  // ✅ Register new connection
+  playerIdToSocketId.set(playerId, socket.id);
 
   const player = {
     socketId: socket.id,
-    playerId: user.id,
+    playerId: playerId,
     username: user.username,
     current_area: user.current_area || "area1",
     admin_level: user.admin_level,
@@ -162,11 +132,12 @@ io.on("connection", (socket) => {
   };
 
   players.set(socket.id, player);
-  playerIdToSocketId.set(user.id, socket.id);
   socket.join(player.current_area);
 
+  console.log(`✅ ${user.username} connected (${socket.id})`);
   socket.emit("identify_ok", player);
 
+  // 👥 Send list of other players in same area
   const peers = Array.from(players.values()).filter(
     (p) => p.current_area === player.current_area && p.socketId !== socket.id
   );
@@ -183,7 +154,7 @@ io.on("connection", (socket) => {
     io.in(p.current_area).emit("players_moved", [p]);
   });
 
-  // 🔁 Player update
+  // 🔁 Player updates
   socket.on("player_update", (data) => {
     const p = players.get(socket.id);
     if (!p) return;
@@ -207,6 +178,7 @@ io.on("connection", (socket) => {
   socket.on("change_area", (data) => {
     const p = players.get(socket.id);
     if (!p) return;
+
     const oldArea = p.current_area;
     socket.leave(oldArea);
     p.current_area = data.newArea;
@@ -223,14 +195,18 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => {
     const p = players.get(socket.id);
     if (!p) return;
+
     socket.to(p.current_area).emit("player_disconnected", p.playerId);
+
+    // 🧹 Clean up
     players.delete(socket.id);
     playerIdToSocketId.delete(p.playerId);
+
     console.log(`❌ ${p.username} disconnected`);
   });
 });
 
 httpServer.listen(PORT, () => {
-  console.log(`🚀 TouchWorld Server v8.7.0 running on port ${PORT}`);
+  console.log(`🚀 TouchWorld Server v8.8.0 running on port ${PORT}`);
   console.log(`🌍 https://touchworld-realtime.onrender.com`);
 });
