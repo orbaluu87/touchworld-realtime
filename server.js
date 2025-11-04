@@ -1,7 +1,4 @@
-// 🌍 TouchWorld Realtime Server v10.2.0
-// ✅ verifyWebSocketToken (Base44) + Debug לוגים מפורטים לשגיאות 500
-// ✅ מניעת כפילויות חיבור, צ'אט, תנועה, עדכון ציוד ושמירה ל-Base44
-
+// 🌍 TouchWorld Realtime Server v11.0.0 - Production Ready
 import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
@@ -15,262 +12,285 @@ const httpServer = createServer(app);
 
 const io = new Server(httpServer, {
   cors: {
-    origin: (process.env.ALLOWED_ORIGINS?.split(",") || ["*"]).map(s => s.trim()),
+    origin: process.env.ALLOWED_ORIGINS?.split(",") || ["*"],
     methods: ["GET", "POST"],
     credentials: true,
   },
   pingTimeout: 60000,
   pingInterval: 25000,
+  transports: ['websocket', 'polling']
 });
 
 const PORT = process.env.PORT || 10000;
 const BASE44_SERVICE_KEY = process.env.BASE44_SERVICE_KEY;
-const VERIFY_TOKEN_URL = "https://base44.app/api/apps/68e269394d8f2fa24e82cd71/functions/verifyWebSocketToken"; // ✅ הנכון
-const UPDATE_PLAYER_URL = "https://base44.app/api/apps/68e269394d8f2fa24e82cd71/functions/updatePlayerData";
+const VERIFY_TOKEN_URL = process.env.VERIFY_TOKEN_URL || "https://base44.app/api/apps/68e269394d8f2fa24e82cd71/functions/verifyWebSocketToken";
+const UPDATE_PLAYER_URL = process.env.UPDATE_PLAYER_URL || "https://base44.app/api/apps/68e269394d8f2fa24e82cd71/functions/updatePlayerData";
 const HEALTH_KEY = process.env.HEALTH_KEY || "secret123";
-const DEBUG_BASE44 = process.env.DEBUG_BASE44 === "1";
 
 console.log("🚀 TouchWorld Server Starting...");
-console.log("🔑 Base44 Service Key:", BASE44_SERVICE_KEY ? "✅ Found" : "❌ Missing");
-console.log("🌐 Allowed Origins:", process.env.ALLOWED_ORIGINS || "*");
-console.log("🩺 Health Key set:", HEALTH_KEY ? "✅" : "❌");
+console.log("📍 Port:", PORT);
+console.log("🔑 Service Key:", BASE44_SERVICE_KEY ? "✅ Configured" : "❌ Missing");
 
-if (!BASE44_SERVICE_KEY) {
-  console.error("❌ Missing BASE44_SERVICE_KEY — אי אפשר לאמת טוקנים מול Base44.");
-}
+// מפות לניהול שחקנים
+const players = new Map(); // socketId -> player data
+const playerIdToSocketId = new Map(); // playerId -> socketId
 
-const players = new Map();           // socket.id -> player data
-const playerIdToSocketId = new Map(); // playerId   -> socket.id
-
-// 🔐 אימות טוקן מול Base44 עם דיבאג מלא
+// 🔐 אימות טוקן מול Base44
 async function verifyToken(token) {
-  console.log("🔐 Verifying token via Base44...");
+  console.log("🔐 [AUTH] Verifying token...");
+  
   try {
     const response = await fetch(VERIFY_TOKEN_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${BASE44_SERVICE_KEY}`,
+        "Authorization": `Bearer ${BASE44_SERVICE_KEY}`,
       },
       body: JSON.stringify({ token }),
     });
 
-    const rawText = await response.text(); // קוראים כטקסט כדי ללכוד גם error bodies
     if (!response.ok) {
-      console.error(`❌ verifyWebSocketToken HTTP ${response.status}`);
-      if (DEBUG_BASE44) {
-        console.error("🧾 Base44 error body:", rawText);
-      }
+      console.error("❌ [AUTH] HTTP Error:", response.status);
       return null;
     }
 
-    let json;
-    try {
-      json = JSON.parse(rawText);
-    } catch (e) {
-      console.error("❌ Failed to parse Base44 JSON:", e.message);
-      if (DEBUG_BASE44) console.error("🧾 Raw response was:", rawText);
+    const result = await response.json();
+    console.log("🔐 [AUTH] Response:", JSON.stringify(result, null, 2));
+
+    if (result.success && result.player_data) {
+      console.log("✅ [AUTH] Success:", result.player_data.username);
+      return result.player_data;
+    } else {
+      console.error("❌ [AUTH] Failed:", result.error || "No player_data");
       return null;
     }
-
-    if (json.success && (json.user || json.player_data)) {
-      const pdata = json.user?.player_data || json.player_data;
-      console.log(`✅ Auth success: ${pdata?.username || "unknown_user"}`);
-      return pdata;
-    }
-
-    console.error("❌ Auth failed (success=false or missing player data).");
-    if (DEBUG_BASE44) console.error("🧾 Full JSON:", JSON.stringify(json));
-    return null;
   } catch (err) {
-    console.error("❌ Auth error (network/exception):", err.message);
+    console.error("❌ [AUTH] Exception:", err.message);
     return null;
   }
 }
 
-// 🔄 עדכון שחקן ב-Base44
+// 💾 עדכון שחקן ב-Base44
 async function updatePlayerInBase44(playerId, updates) {
   try {
-    const response = await fetch(UPDATE_PLAYER_URL, {
+    await fetch(UPDATE_PLAYER_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${BASE44_SERVICE_KEY}`,
+        "Authorization": `Bearer ${BASE44_SERVICE_KEY}`,
       },
       body: JSON.stringify({ playerId, updates }),
     });
-    if (!response.ok) {
-      const t = await response.text();
-      console.error(`❌ Update player failed HTTP ${response.status}: ${t}`);
-      return;
-    }
-    console.log(`✅ Player ${playerId} updated successfully.`);
   } catch (err) {
-    console.error("❌ Update error:", err.message);
+    console.error("❌ [UPDATE] Error:", err.message);
   }
 }
 
-// 🧠 Middleware אימות חיבור
+// 🛡️ Middleware - אימות לפני חיבור
 io.use(async (socket, next) => {
-  console.log(`🔌 New connection attempt: ${socket.id}`);
+  console.log("\n🔌 [MIDDLEWARE] New connection attempt");
+  console.log("🔌 [MIDDLEWARE] Socket ID:", socket.id);
+  
   const token = socket.handshake.auth?.token;
-
+  console.log("🔌 [MIDDLEWARE] Token present:", !!token);
+  
   if (!token) {
-    console.error("❌ No token provided.");
-    return next(new Error("No token"));
-  }
-
-  if (!BASE44_SERVICE_KEY) {
-    console.error("❌ BASE44_SERVICE_KEY is missing; cannot verify token.");
-    return next(new Error("Server misconfigured"));
+    console.error("❌ [MIDDLEWARE] No token provided");
+    return next(new Error("Authentication error: No token"));
   }
 
   const playerData = await verifyToken(token);
+  
   if (!playerData) {
-    console.error("❌ Invalid token (verification failed).");
-    return next(new Error("Invalid token"));
+    console.error("❌ [MIDDLEWARE] Token verification failed");
+    return next(new Error("Authentication error: Invalid token"));
   }
 
+  console.log("✅ [MIDDLEWARE] Auth successful for:", playerData.username);
   socket.playerData = playerData;
   next();
 });
 
-// 🎮 חיבור Socket
+// 🎮 חיבור שחקן
 io.on("connection", (socket) => {
   const playerData = socket.playerData;
   const playerId = playerData.id;
 
-  console.log(`\n✅ PLAYER CONNECTED: ${playerData.username} (${socket.id})`);
+  console.log("\n✅✅✅ PLAYER CONNECTED ✅✅✅");
+  console.log("👤 Username:", playerData.username);
+  console.log("🆔 Player ID:", playerId);
+  console.log("🔌 Socket ID:", socket.id);
+  console.log("🗺️  Area:", playerData.current_area);
 
-  // מניעת כפילויות
+  // נתק חיבור קודם (למנוע כפילויות)
   const existingSocketId = playerIdToSocketId.get(playerId);
   if (existingSocketId && existingSocketId !== socket.id) {
+    console.log("🔄 [DUPLICATE] Disconnecting old connection:", existingSocketId);
     const oldSocket = io.sockets.sockets.get(existingSocketId);
     if (oldSocket) {
       oldSocket.emit("disconnect_reason", "logged_in_elsewhere");
       oldSocket.disconnect(true);
-      players.delete(existingSocketId);
     }
+    players.delete(existingSocketId);
   }
+
   playerIdToSocketId.set(playerId, socket.id);
 
-  // יצירת אובייקט שחקן
+  // יצירת אובייקט השחקן
   const player = {
     socketId: socket.id,
-    playerId,
+    playerId: playerId,
     username: playerData.username,
+    admin_level: playerData.admin_level || 'user',
     current_area: playerData.current_area || "area1",
     equipment: playerData.equipment || {},
-    position_x: playerData.position_x ?? 690,
-    position_y: playerData.position_y ?? 385,
+    position_x: playerData.position_x || 690,
+    position_y: playerData.position_y || 385,
     direction: "front",
     move_speed: 60,
+    is_trading: false
   };
 
   players.set(socket.id, player);
   socket.join(player.current_area);
 
-  // זיהוי ללקוח
+  // שלח אישור זיהוי
+  console.log("📤 [EMIT] identify_ok");
   socket.emit("identify_ok", player);
 
-  // רשימת שחקנים באזור
+  // שלח רשימת שחקנים קיימים באזור
   const peers = Array.from(players.values()).filter(
     (p) => p.current_area === player.current_area && p.socketId !== socket.id
   );
+  console.log("📤 [EMIT] current_players. Count:", peers.length);
   socket.emit("current_players", peers);
+
+  // הודע לאחרים על שחקן חדש
+  console.log("📢 [BROADCAST] player_joined to area:", player.current_area);
   socket.to(player.current_area).emit("player_joined", player);
 
-  // תנועה
+  // 🚶 תנועה
   socket.on("move_to", (data) => {
     const p = players.get(socket.id);
     if (!p) return;
-    p.position_x = data.x;
-    p.position_y = data.y;
-    p.direction = data.direction || p.direction;
+
+    Object.assign(p, {
+      position_x: data.x,
+      position_y: data.y,
+      direction: data.direction,
+      is_moving: true
+    });
+
     io.in(p.current_area).emit("players_moved", [p]);
   });
 
-  // עדכון ציוד + שידור
+  // 👕 עדכון ציוד
   socket.on("update_equipment", async (updates) => {
     const p = players.get(socket.id);
     if (!p) return;
+
+    console.log("👕 [EQUIPMENT] Update for:", p.username);
     p.equipment = { ...p.equipment, ...updates };
+
     io.in(p.current_area).emit("player_equipment_updated", {
       playerId: p.playerId,
       equipment: p.equipment,
     });
+
     await updatePlayerInBase44(p.playerId, { equipment: p.equipment });
   });
 
-  // צ'אט
+  // 💬 צ'אט
   socket.on("chat_message", (data) => {
     const p = players.get(socket.id);
     if (!p) return;
-    const msg = {
-      sender: p.username,
+
+    console.log("💬 [CHAT]", p.username + ":", data.message);
+
+    io.in(p.current_area).emit("chat_message", {
+      id: p.playerId,
       playerId: p.playerId,
+      username: p.username,
+      admin_level: p.admin_level,
       message: data.message,
-      area: p.current_area,
       timestamp: Date.now(),
-    };
-    console.log(`💬 [${p.current_area}] ${p.username}: ${data.message}`);
-    io.in(p.current_area).emit("chat_message", msg);
+    });
   });
 
-  // מעבר אזור
+  // 🗺️ שינוי אזור
   socket.on("change_area", async (data) => {
     const p = players.get(socket.id);
     if (!p) return;
 
     const oldArea = p.current_area;
     const newArea = data.newArea;
-    if (!newArea || newArea === oldArea) return;
+
+    console.log("🗺️ [AREA_CHANGE]", p.username, ":", oldArea, "→", newArea);
 
     socket.leave(oldArea);
-    socket.join(newArea);
     socket.to(oldArea).emit("player_disconnected", p.playerId);
 
+    socket.join(newArea);
     p.current_area = newArea;
 
     const peersInNewArea = Array.from(players.values()).filter(
       (pl) => pl.current_area === newArea && pl.socketId !== socket.id
     );
+
     socket.emit("current_players", peersInNewArea);
     socket.to(newArea).emit("player_joined", p);
 
     await updatePlayerInBase44(p.playerId, { current_area: newArea });
-    console.log(`🗺️ ${p.username} moved ${oldArea} → ${newArea}`);
   });
 
-  // ניתוק
+  // 🔁 עדכון כללי של שחקן
+  socket.on("player_update", (data) => {
+    const p = players.get(socket.id);
+    if (!p) return;
+
+    Object.assign(p, data);
+    io.in(p.current_area).emit("player_update", { id: p.playerId, ...data });
+  });
+
+  // 🔌 התנתקות
   socket.on("disconnect", (reason) => {
     const p = players.get(socket.id);
     if (!p) return;
+
+    console.log("\n❌ [DISCONNECT]", p.username);
+    console.log("❌ [DISCONNECT] Reason:", reason);
+
     players.delete(socket.id);
     playerIdToSocketId.delete(p.playerId);
+
     io.in(p.current_area).emit("player_disconnected", p.playerId);
-    console.log(`❌ ${p.username} disconnected (${reason})`);
+    console.log("✅ [DISCONNECT] Cleanup complete\n");
   });
 });
 
-// 🩺 Health
+// 💚 Health Check
 app.get("/health", (req, res) => {
-  if (req.query.key !== HEALTH_KEY) return res.status(401).send("Unauthorized");
+  const key = req.query.key;
+  if (key !== HEALTH_KEY) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  
   res.json({
     status: "OK",
-    version: "10.2.0",
+    uptime: process.uptime(),
     connectedPlayers: players.size,
     timestamp: new Date().toISOString(),
+    version: "11.0.0"
   });
 });
 
-// 🏠 Root
 app.get("/", (req, res) => {
-  res.send("✅ TouchWorld Realtime Server v10.2.0 is running.");
+  res.send("🎮 TouchWorld Realtime Server v11.0.0 - Running ✅");
 });
 
-// 🚀 Start
 httpServer.listen(PORT, () => {
-  console.log(`\n✅ SERVER RUNNING ON PORT ${PORT}`);
-  console.log("⚡ Waiting for Base44 connections...\n");
+  console.log("\n✅✅✅ SERVER STARTED SUCCESSFULLY ✅✅✅");
+  console.log(`🌍 Listening on port ${PORT}`);
+  console.log(`🔗 Health: http://localhost:${PORT}/health?key=${HEALTH_KEY}`);
+  console.log("⚡ Ready for connections!\n");
 });
