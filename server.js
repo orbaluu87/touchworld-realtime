@@ -1,5 +1,5 @@
 // ============================================================================
-// Touch World - Socket Server v9.1.0 - Secure & Admin Message Support
+// Touch World - Socket Server v9.2.0 - Movement + Admin Messages
 // ============================================================================
 
 import { createServer } from "http";
@@ -44,7 +44,7 @@ if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   process.exit(1);
 }
 
-const VERSION = "9.1.0";
+const VERSION = "9.2.0";
 
 // Health checks
 app.get("/healthz", (req, res) => {
@@ -83,6 +83,11 @@ const players = new Map();
 const activeTrades = new Map();
 const chatRateLimit = new Map();
 
+// ===================== MOVEMENT CONSTANTS =====================
+const MOVE_SPEED = 120; // pixels per second
+const GAME_TICK_RATE = 60; // updates per second
+const GAME_TICK_INTERVAL = 1000 / GAME_TICK_RATE;
+
 // Utility: Safe player view
 function safePlayerView(p) {
   if (!p) return null;
@@ -99,7 +104,7 @@ function safePlayerView(p) {
     direction: p.direction || "front",
     is_moving: !!p.is_moving,
     animation_frame: p.animation_frame || "idle",
-    move_speed: 60,
+    move_speed: MOVE_SPEED,
     is_trading: !!p.activeTradeId,
   };
 }
@@ -208,6 +213,83 @@ function allowChat(socketId) {
   return true;
 }
 
+// ===================== MOVEMENT LOGIC =====================
+function updatePlayerPosition(player, deltaSeconds) {
+  if (!player.is_moving || !player.destination_x || !player.destination_y) {
+    player.is_moving = false;
+    player.animation_frame = "idle";
+    return;
+  }
+
+  const dx = player.destination_x - player.position_x;
+  const dy = player.destination_y - player.position_y;
+  const distance = Math.sqrt(dx * dx + dy * dy);
+
+  if (distance < 2) {
+    player.position_x = player.destination_x;
+    player.position_y = player.destination_y;
+    player.is_moving = false;
+    player.animation_frame = "idle";
+    player.destination_x = null;
+    player.destination_y = null;
+    return;
+  }
+
+  const moveDistance = MOVE_SPEED * deltaSeconds;
+  const ratio = Math.min(moveDistance / distance, 1);
+
+  player.position_x += dx * ratio;
+  player.position_y += dy * ratio;
+
+  // Update direction
+  if (Math.abs(dx) > Math.abs(dy)) {
+    player.direction = dx > 0 ? "e" : "w";
+  } else {
+    player.direction = dy > 0 ? "s" : "n";
+  }
+
+  player.animation_frame = "walk";
+}
+
+// ===================== GAME LOOP =====================
+let lastTickTime = Date.now();
+
+setInterval(() => {
+  const now = Date.now();
+  const deltaMs = now - lastTickTime;
+  const deltaSeconds = deltaMs / 1000;
+  lastTickTime = now;
+
+  // Group players by area
+  const areaUpdates = new Map();
+
+  for (const [socketId, player] of players.entries()) {
+    if (player.is_moving) {
+      updatePlayerPosition(player, deltaSeconds);
+
+      if (!areaUpdates.has(player.current_area)) {
+        areaUpdates.set(player.current_area, []);
+      }
+
+      areaUpdates.get(player.current_area).push({
+        playerId: player.playerId,
+        position_x: player.position_x,
+        position_y: player.position_y,
+        direction: player.direction,
+        is_moving: player.is_moving,
+        animation_frame: player.animation_frame,
+      });
+    }
+  }
+
+  // Broadcast updates per area
+  for (const [areaId, updates] of areaUpdates.entries()) {
+    if (updates.length > 0) {
+      io.in(areaId).emit("players_moved", updates);
+    }
+  }
+}, GAME_TICK_INTERVAL);
+
 // ===================== SOCKET AUTH =====================
 io.use(async (socket, next) => {
   console.log("🔐 Auth attempt, socket:", socket.id);
@@ -277,6 +359,8 @@ io.on("connection", (socket) => {
     direction: "front",
     is_moving: false,
     animation_frame: "idle",
+    destination_x: null,
+    destination_y: null,
   };
 
   players.set(socket.id, player);
@@ -290,34 +374,93 @@ io.on("connection", (socket) => {
   socket.emit("current_players", peers);
   socket.to(player.current_area).emit("player_joined", safePlayerView(player));
 
+  // 🚶 תנועת שחקן
+  socket.on("move_to", (data) => {
+    const p = players.get(socket.id);
+    if (!p) return;
+
+    const { x, y } = data;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+
+    p.destination_x = Math.max(0, Math.min(1380, x));
+    p.destination_y = Math.max(0, Math.min(770, y));
+    p.is_moving = true;
+
+    console.log(`🚶 ${p.username} moving to (${p.destination_x}, ${p.destination_y})`);
+  });
+
+  // 👕 עדכון ציוד
+  socket.on("player_update", (data) => {
+    const p = players.get(socket.id);
+    if (!p || !data.equipment) return;
+
+    p.equipment = data.equipment;
+    socket.to(p.current_area).emit("player_update", {
+      playerId: p.playerId,
+      equipment: p.equipment,
+    });
+
+    console.log(`👕 ${p.username} updated equipment`);
+  });
+
+  // 🗺️ שינוי אזור
+  socket.on("change_area", (data) => {
+    const p = players.get(socket.id);
+    if (!p || !data.newArea) return;
+
+    const oldArea = p.current_area;
+    p.current_area = data.newArea;
+    p.is_moving = false;
+    p.destination_x = null;
+    p.destination_y = null;
+
+    socket.leave(oldArea);
+    socket.join(data.newArea);
+
+    socket.to(oldArea).emit("player_disconnected", p.playerId);
+    socket.to(data.newArea).emit("player_joined", safePlayerView(p));
+
+    const peers = Array.from(players.values())
+      .filter((other) => other.current_area === data.newArea && other.socketId !== socket.id)
+      .map(safePlayerView);
+
+    socket.emit("current_players", peers);
+
+    console.log(`🗺️ ${p.username} moved from ${oldArea} to ${data.newArea}`);
+  });
+
   // 💬 הודעות מערכת ממנהלים
   socket.on("admin_system_message", (messageData) => {
-    console.log(`📢 Admin message from ${messageData.sender_name}`);
+    const p = players.get(socket.id);
+    if (!p) return;
+
+    if (p.admin_level !== "admin" && p.admin_level !== "senior_touch") {
+      console.log(`⚠️ Non-admin tried to send system message: ${p.username}`);
+      return;
+    }
+
+    console.log(`📢 Admin message from ${messageData.sender_name} (${messageData.target_area})`);
+
+    const systemMessage = {
+      id: "system",
+      playerId: "system",
+      username: messageData.sender_name,
+      admin_level: messageData.sender_level,
+      message: messageData.message,
+      timestamp: messageData.timestamp || Date.now(),
+    };
 
     if (messageData.target_area === "current") {
-      const adminPlayer = players.get(socket.id);
-      if (adminPlayer) {
-        const targetArea = adminPlayer.current_area;
-        for (const [sid, p] of players) {
-          if (p.current_area === targetArea) {
-            io.to(sid).emit("chat_message", {
-              id: "system",
-              username: messageData.sender_name,
-              admin_level: messageData.sender_level,
-              message: messageData.message,
-              timestamp: messageData.timestamp,
-            });
-          }
+      const targetArea = p.current_area;
+      for (const [sid, player] of players) {
+        if (player.current_area === targetArea) {
+          io.to(sid).emit("chat_message", systemMessage);
         }
       }
+      console.log(`✅ Sent system message to area: ${targetArea}`);
     } else {
-      io.emit("chat_message", {
-        id: "system",
-        username: messageData.sender_name,
-        admin_level: messageData.sender_level,
-        message: messageData.message,
-        timestamp: messageData.timestamp,
-      });
+      io.emit("chat_message", systemMessage);
+      console.log(`✅ Sent system message to all players`);
     }
   });
 
@@ -333,7 +476,9 @@ io.on("connection", (socket) => {
     }
     io.in(p.current_area).emit("chat_message", {
       id: p.playerId,
+      playerId: p.playerId,
       username: p.username,
+      admin_level: p.admin_level,
       message: msg,
       timestamp: Date.now(),
     });
@@ -344,7 +489,7 @@ io.on("connection", (socket) => {
   socket.on("disconnect", (reason) => {
     const p = players.get(socket.id);
     if (!p) return;
-    console.log(`🔴 ${p.username} (${p.playerId}) disconnected`);
+    console.log(`🔴 ${p.username} (${p.playerId}) disconnected: ${reason}`);
     socket.to(p.current_area).emit("player_disconnected", p.playerId);
     players.delete(socket.id);
   });
@@ -355,5 +500,6 @@ httpServer.listen(PORT, () => {
   console.log(`\n${"★".repeat(60)}`);
   console.log(`🚀 Touch World Server v${VERSION} - Port ${PORT}`);
   console.log(`🌍 https://touchworld-realtime.onrender.com`);
+  console.log(`⚡ Game loop running at ${GAME_TICK_RATE} ticks/sec`);
   console.log(`${"★".repeat(60)}\n`);
 });
