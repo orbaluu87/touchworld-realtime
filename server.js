@@ -1,5 +1,5 @@
 // ============================================================================
-// Touch World - Socket Server v9.3.0 - Silent Movement Mode
+// Touch World - Socket Server v9.3.1 - Debug Movement Mode + Rooms by Area
 // ============================================================================
 
 import { createServer } from "http";
@@ -14,8 +14,12 @@ const app = express();
 app.use(express.json());
 app.use(helmet());
 
-// CORS
-const allowedOrigins = (process.env.ALLOWED_ORIGINS || "").split(",").filter(Boolean);
+// ---------- CORS ----------
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || "")
+  .split(",")
+  .map(s => s.trim())
+  .filter(Boolean);
+
 app.use(
   cors({
     origin: allowedOrigins.length > 0 ? allowedOrigins : "*",
@@ -24,11 +28,11 @@ app.use(
   })
 );
 
-// Server setup
+// ---------- Server ----------
 const httpServer = createServer(app);
 const PORT = process.env.PORT || 10000;
 
-// Security keys
+// ---------- Env / Security ----------
 const JWT_SECRET = process.env.WSS_JWT_SECRET || process.env.JWT_SECRET;
 const VERIFY_TOKEN_URL =
   process.env.VERIFY_TOKEN_URL ||
@@ -37,59 +41,31 @@ const BASE44_SERVICE_KEY = process.env.BASE44_SERVICE_KEY;
 const BASE44_API_URL =
   process.env.BASE44_API_URL ||
   "https://base44.app/api/apps/68e269394d8f2fa24e82cd71";
-const HEALTH_KEY = process.env.HEALTH_KEY;
+const HEALTH_KEY = process.env.HEALTH_KEY || "secret-health";
 
 if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
-  console.error("❌ Missing security keys");
+  console.error("❌ Missing security keys (JWT_SECRET/BASE44_SERVICE_KEY/HEALTH_KEY)");
   process.exit(1);
 }
 
-const VERSION = "9.3.0";
+const VERSION = "9.3.1";
 
-// Health checks
-app.get("/healthz", (req, res) => {
-  res.status(200).json({ ok: true, version: VERSION, players: players.size });
-});
-
-app.get("/health", (req, res) => {
-  const key = req.headers["x-health-key"] || req.query.key;
-  if (key !== HEALTH_KEY) return res.status(403).json({ ok: false });
-  res.json({
-    ok: true,
-    version: VERSION,
-    players: players.size,
-    trades: activeTrades.size,
-    list: Array.from(players.values()).map((p) => ({
-      id: p.playerId,
-      user: p.username,
-      area: p.current_area,
-    })),
-  });
-});
-
-// Socket.IO setup
-const io = new Server(httpServer, {
-  cors: {
-    origin: allowedOrigins.length > 0 ? allowedOrigins : "*",
-    methods: ["GET", "POST"],
-  },
-  transports: ["websocket"],
-  pingTimeout: 60000,
-  pingInterval: 25000,
-});
-
-// Player maps
+// ---------- State ----------
+/** Map<socketId, Player> */
 const players = new Map();
+/** Map<tradeId, Trade> */
 const activeTrades = new Map();
+/** Map<string, number> */
 const chatRateLimit = new Map();
 
-// Utility: Safe player view
+// ---------- Helpers ----------
+const now = () => Date.now();
+
 function safePlayerView(p) {
   if (!p) return null;
   return {
     id: p.playerId,
     playerId: p.playerId,
-    socketId: p.socketId,
     username: p.username,
     current_area: p.current_area,
     admin_level: p.admin_level,
@@ -104,7 +80,6 @@ function safePlayerView(p) {
   };
 }
 
-// Utility: Find socket by player ID
 function getSocketIdByPlayerId(playerId) {
   for (const [sid, p] of players.entries()) {
     if (p.playerId === playerId) return sid;
@@ -112,10 +87,43 @@ function getSocketIdByPlayerId(playerId) {
   return null;
 }
 
-// Verify token with Base44
+/** נורמליזציה לתשובה של verifyWebSocketToken (תומך גם result.user וגם result.user.player_data) */
+function normalizeUserShape(userAny) {
+  // אם זה מגיע כ { player_data: {...} }
+  const pd = userAny?.player_data || userAny;
+
+  const playerId =
+    pd?.id ?? pd?.playerId ?? pd?.userId ?? userAny?.id ?? userAny?.playerId;
+
+  return {
+    playerId,
+    userId: pd?.userId ?? playerId,
+    username: pd?.username ?? "Guest",
+    current_area: pd?.current_area ?? "area1",
+    admin_level: pd?.admin_level ?? "user",
+    equipment: {
+      skin_code: pd?.skin_code,
+      equipped_hair: pd?.equipped_hair,
+      equipped_top: pd?.equipped_top,
+      equipped_pants: pd?.equipped_pants,
+      equipped_hat: pd?.equipped_hat,
+      equipped_necklace: pd?.equipped_necklace,
+      equipped_halo: pd?.equipped_halo,
+      equipped_accessory: pd?.equipped_accessory,
+      ...(pd?.equipment || {}),
+    },
+    position_x: Number.isFinite(pd?.position_x) ? pd.position_x : 600,
+    position_y: Number.isFinite(pd?.position_y) ? pd.position_y : 400,
+    direction: pd?.direction ?? "front",
+    keep_away_mode: !!pd?.keep_away_mode,
+    is_invisible: !!pd?.is_invisible,
+  };
+}
+
+// אימות טוקן מול Base44
 async function verifyTokenWithBase44(token) {
   try {
-    console.log("🔐 Verifying token...");
+    console.log("🔐 Verifying token with Base44…");
     const response = await fetch(VERIFY_TOKEN_URL, {
       method: "POST",
       headers: {
@@ -124,20 +132,33 @@ async function verifyTokenWithBase44(token) {
       },
       body: JSON.stringify({ token }),
     });
-    if (!response.ok) throw new Error(await response.text());
+
+    if (!response.ok) {
+      const txt = await response.text();
+      throw new Error(`HTTP ${response.status}: ${txt}`);
+    }
+
     const result = await response.json();
-    if (!result.success) throw new Error(result.error);
-    console.log("✅ Token OK:", result.user?.username);
-    return result.user;
+    if (!result?.success) {
+      throw new Error(result?.error || "verifyWebSocketToken failed");
+    }
+
+    // תומך גם במקרה של result.user וגם result.user.player_data
+    const normalized = normalizeUserShape(result.user);
+    if (!normalized.playerId) {
+      throw new Error("normalized playerId missing");
+    }
+
+    console.log(`✅ Token OK for ${normalized.username} (${normalized.playerId})`);
+    return normalized;
   } catch (err) {
     console.error("❌ Token Error:", err.message);
     return null;
   }
 }
 
-// Trade execution via Base44
+// Trade exec via Base44
 async function executeTradeOnBase44(trade) {
-  console.log(`[Trade Execute] ${trade.id}`);
   try {
     const resp = await fetch(`${BASE44_API_URL}/functions/executeTrade`, {
       method: "POST",
@@ -157,34 +178,60 @@ async function executeTradeOnBase44(trade) {
       }),
     });
     const json = await resp.json();
-    if (!resp.ok) throw new Error(json?.error);
-    console.log(`✅ Trade OK`);
+    if (!resp.ok) throw new Error(json?.error || `HTTP ${resp.status}`);
     return { success: true, data: json };
   } catch (e) {
-    console.error(`❌ Trade Failed:`, e.message);
     return { success: false, error: e.message };
   }
 }
 
-// Broadcast trade status
 function broadcastTradeStatus(tradeId, status, reason = null) {
   const trade = activeTrades.get(tradeId);
   if (!trade) return;
-
-  const initiatorSocket = getSocketIdByPlayerId(trade.initiatorId);
-  const receiverSocket = getSocketIdByPlayerId(trade.receiverId);
-
+  const initSid = getSocketIdByPlayerId(trade.initiatorId);
+  const recvSid = getSocketIdByPlayerId(trade.receiverId);
   const payload = { tradeId, status, reason };
-
-  if (initiatorSocket) io.to(initiatorSocket).emit("trade_status_updated", payload);
-  if (receiverSocket) io.to(receiverSocket).emit("trade_status_updated", payload);
+  if (initSid) io.to(initSid).emit("trade_status_updated", payload);
+  if (recvSid) io.to(recvSid).emit("trade_status_updated", payload);
 }
 
-// Socket.IO connection handler
+// ---------- Health ----------
+app.get("/healthz", (_req, res) => {
+  res.status(200).json({ ok: true, version: VERSION, players: players.size });
+});
+
+app.get("/health", (req, res) => {
+  const key = req.headers["x-health-key"] || req.query.key;
+  if (key !== HEALTH_KEY) return res.status(403).json({ ok: false });
+  res.json({
+    ok: true,
+    version: VERSION,
+    players: players.size,
+    trades: activeTrades.size,
+    list: Array.from(players.values()).map(p => ({
+      id: p.playerId,
+      user: p.username,
+      area: p.current_area,
+    })),
+  });
+});
+
+// ---------- Socket.IO ----------
+const io = new Server(httpServer, {
+  cors: {
+    origin: allowedOrigins.length > 0 ? allowedOrigins : "*",
+    methods: ["GET", "POST"],
+  },
+  transports: ["websocket"],
+  pingTimeout: 60000,
+  pingInterval: 25000,
+});
+
+// ---------- Connection ----------
 io.on("connection", async (socket) => {
+  // Auth
   const token = socket.handshake.auth?.token;
   if (!token) {
-    console.log("❌ No token provided");
     socket.emit("disconnect_reason", "no_token");
     socket.disconnect(true);
     return;
@@ -192,23 +239,22 @@ io.on("connection", async (socket) => {
 
   const user = await verifyTokenWithBase44(token);
   if (!user) {
-    console.log("❌ Invalid token");
     socket.emit("disconnect_reason", "invalid_token");
     socket.disconnect(true);
     return;
   }
 
-  // Check for duplicate connection
+  // Kick duplicate
   for (const [sid, p] of players.entries()) {
     if (p.playerId === user.playerId && sid !== socket.id) {
-      console.log(`⚠️ Duplicate login detected for ${user.username}`);
       io.to(sid).emit("disconnect_reason", "logged_in_elsewhere");
       io.sockets.sockets.get(sid)?.disconnect(true);
       players.delete(sid);
     }
   }
 
-  players.set(socket.id, {
+  // Register player
+  const player = {
     socketId: socket.id,
     playerId: user.playerId,
     userId: user.userId,
@@ -216,237 +262,241 @@ io.on("connection", async (socket) => {
     admin_level: user.admin_level,
     current_area: user.current_area || "area1",
     equipment: user.equipment || {},
-    position_x: user.position_x || 600,
-    position_y: user.position_y || 400,
+    position_x: user.position_x ?? 600,
+    position_y: user.position_y ?? 400,
     direction: user.direction || "front",
     is_moving: false,
     animation_frame: "idle",
-    keep_away_mode: user.keep_away_mode || false,
-    is_invisible: user.is_invisible || false,
-  });
+    _lastMoveLogAt: 0, // throttled movement log
+  };
 
-  console.log(`🟢 Player connected: ${user.username} (${user.playerId})`);
+  players.set(socket.id, player);
 
-  // Send current players in same area
-  const playersInArea = Array.from(players.values())
-    .filter((p) => p.current_area === user.current_area)
+  // Join area room
+  socket.join(player.current_area);
+
+  // Send current players in area
+  const areaPeers = Array.from(players.values())
+    .filter(p => p.current_area === player.current_area && p.socketId !== socket.id)
     .map(safePlayerView);
 
-  socket.emit("current_players", playersInArea);
+  socket.emit("identify_ok", safePlayerView(player));
+  socket.emit("current_players", areaPeers);
 
-  // Broadcast to others
-  socket.broadcast.emit("player_joined", safePlayerView(players.get(socket.id)));
+  // Notify others in same area
+  socket.to(player.current_area).emit("player_joined", safePlayerView(player));
 
-  // ==================== MOVE_TO (ללא לוגים!) ====================
-  socket.on("move_to", (data) => {
-    const player = players.get(socket.id);
-    if (!player) return;
+  // ========== MOVE_TO (throttled debug logs, room broadcast) ==========
+  socket.on("move_to", (data = {}) => {
+    const p = players.get(socket.id);
+    if (!p) return;
 
     const { x, y } = data;
     if (typeof x !== "number" || typeof y !== "number") return;
 
-    player.position_x = x;
-    player.position_y = y;
-    player.is_moving = true;
+    // שמור קודמים לצורך חישוב כיוון
+    const prevX = p.position_x;
+    const prevY = p.position_y;
 
-    // ✅ שידור לכולם באותו אזור - ללא לוג!
-    const playersInArea = Array.from(players.values()).filter(
-      (p) => p.current_area === player.current_area
-    );
+    p.position_x = x;
+    p.position_y = y;
+    p.is_moving = true;
 
-    playersInArea.forEach((p) => {
-      const sid = getSocketIdByPlayerId(p.playerId);
-      if (sid) {
-        io.to(sid).emit("players_moved", [
-          {
-            id: player.playerId,
-            playerId: player.playerId,
-            position_x: player.position_x,
-            position_y: player.position_y,
-            is_moving: player.is_moving,
-            direction: player.direction,
-            animation_frame: "walk",
-          },
-        ]);
-      }
-    });
+    // כיוון (על סמך delta מהעבר)
+    const dx = x - prevX;
+    const dy = y - prevY;
+    if (Math.abs(dx) > Math.abs(dy)) {
+      p.direction = dx > 0 ? "e" : "w";
+    } else if (Math.abs(dy) > 0) {
+      p.direction = dy > 0 ? "s" : "n";
+    }
+
+    // לוג פעם ב-3 שניות לכל שחקן
+    const t = now();
+    if (!p._lastMoveLogAt || t - p._lastMoveLogAt > 3000) {
+      console.log(`🚶 ${p.username} → (${Math.round(x)}, ${Math.round(y)}) | ${p.current_area}`);
+      p._lastMoveLogAt = t;
+    }
+
+    // שדר רק לחדר האזור
+    io.to(p.current_area).emit("players_moved", [
+      {
+        id: p.playerId,
+        playerId: p.playerId,
+        position_x: p.position_x,
+        position_y: p.position_y,
+        is_moving: p.is_moving,
+        direction: p.direction,
+        animation_frame: "walk",
+      },
+    ]);
   });
 
-  // ==================== PLAYER_UPDATE ====================
-  socket.on("player_update", (data) => {
-    const player = players.get(socket.id);
-    if (!player) return;
+  // ========== PLAYER_UPDATE ==========
+  socket.on("player_update", (data = {}) => {
+    const p = players.get(socket.id);
+    if (!p) return;
 
-    if (data.equipment) player.equipment = data.equipment;
-    if (data.direction) player.direction = data.direction;
+    if (Number.isFinite(data.x)) p.position_x = data.x;
+    if (Number.isFinite(data.y)) p.position_y = data.y;
+    if (typeof data.direction === "string") p.direction = data.direction;
+    if (typeof data.is_moving === "boolean") p.is_moving = data.is_moving;
+    if (typeof data.animation_frame === "string") p.animation_frame = data.animation_frame;
+    if (data.equipment && typeof data.equipment === "object") p.equipment = data.equipment;
 
-    socket.broadcast.emit("player_update", {
-      id: player.playerId,
-      playerId: player.playerId,
-      ...data,
-    });
+    socket.to(p.current_area).emit("player_update", safePlayerView(p));
   });
 
-  // ==================== CHAT_MESSAGE ====================
-  socket.on("chat_message", (data) => {
-    const player = players.get(socket.id);
-    if (!player) return;
+  // ========== CHAT_MESSAGE (rate limit) ==========
+  socket.on("chat_message", (data = {}) => {
+    const p = players.get(socket.id);
+    if (!p) return;
 
-    const now = Date.now();
-    const userRateKey = `${player.playerId}_chat`;
-    const lastMessageTime = chatRateLimit.get(userRateKey) || 0;
+    const msg = (data.message ?? data.text ?? "").toString().trim();
+    if (!msg) return;
 
-    if (now - lastMessageTime < 1000) {
+    const key = `chat_${p.playerId}`;
+    const last = chatRateLimit.get(key) || 0;
+    if (now() - last < 1000) {
       socket.emit("chat_rate_limited");
       return;
     }
+    chatRateLimit.set(key, now());
 
-    chatRateLimit.set(userRateKey, now);
-
-    const chatPayload = {
-      id: player.playerId,
-      playerId: player.playerId,
-      username: player.username,
-      admin_level: player.admin_level,
-      message: data.message,
-      timestamp: now,
+    const payload = {
+      id: p.playerId,
+      playerId: p.playerId,
+      username: p.username,
+      admin_level: p.admin_level,
+      message: msg,
+      timestamp: Date.now(),
     };
 
-    console.log(`💬 [${player.current_area}] ${player.username}: ${data.message}`);
-
-    // שידור לכולם באותו אזור
-    const playersInArea = Array.from(players.values()).filter(
-      (p) => p.current_area === player.current_area
-    );
-
-    playersInArea.forEach((p) => {
-      const sid = getSocketIdByPlayerId(p.playerId);
-      if (sid) io.to(sid).emit("chat_message", chatPayload);
-    });
+    io.to(p.current_area).emit("chat_message", payload);
+    console.log(`💬 [${p.current_area}] ${p.username}: ${msg}`);
   });
 
-  // ==================== ADMIN_SYSTEM_MESSAGE ====================
-  socket.on("admin_system_message", (data) => {
-    const player = players.get(socket.id);
-    if (!player) return;
+  // ========== ADMIN_SYSTEM_MESSAGE (current/all) ==========
+  socket.on("admin_system_message", (messageData = {}) => {
+    const adminPlayer = players.get(socket.id);
+    if (!adminPlayer) return;
 
-    // רק מנהלים
-    if (player.admin_level !== "admin" && player.admin_level !== "senior_touch") {
-      return;
-    }
+    // הרשאת ניהול בסיסית
+    if (!["admin", "senior_touch"].includes(adminPlayer.admin_level)) return;
 
-    console.log(`📢 Admin message from ${player.username}: ${data.message}`);
-
-    // שידור לכולם
-    io.emit("chat_message", {
+    const payload = {
       id: "system",
-      playerId: "system",
-      username: player.username,
-      admin_level: player.admin_level,
-      message: data.message,
+      username: messageData.sender_name || adminPlayer.username,
+      admin_level: adminPlayer.admin_level,
+      message: String(messageData.message || "").slice(0, 300),
       timestamp: Date.now(),
-    });
+    };
+
+    const target = messageData.target_area || "all";
+    if (target === "current") {
+      io.to(adminPlayer.current_area).emit("chat_message", payload);
+      console.log(`📢 [SYSTEM current:${adminPlayer.current_area}] ${payload.message}`);
+    } else {
+      io.emit("chat_message", payload);
+      console.log(`📢 [SYSTEM all] ${payload.message}`);
+    }
   });
 
-  // ==================== CHANGE_AREA ====================
-  socket.on("change_area", (data) => {
-    const player = players.get(socket.id);
-    if (!player) return;
+  // ========== CHANGE_AREA ==========
+  socket.on("change_area", (data = {}) => {
+    const p = players.get(socket.id);
+    if (!p) return;
 
-    const { newArea } = data;
-    const oldArea = player.current_area;
+    const newArea = data.newArea;
+    if (!newArea || newArea === p.current_area) return;
 
-    player.current_area = newArea;
+    const oldArea = p.current_area;
 
-    console.log(`🚪 ${player.username} moved: ${oldArea} → ${newArea}`);
+    socket.leave(oldArea);
+    p.current_area = newArea;
+    socket.join(newArea);
 
-    // הודעה לאזור הישן
-    socket.broadcast.emit("player_area_changed", {
-      playerId: player.playerId,
-      oldArea,
-      newArea,
-    });
+    console.log(`🚪 ${p.username} moved: ${oldArea} → ${newArea}`);
+
+    // ידע את הישן שיצא
+    socket.to(oldArea).emit("player_area_changed", { id: p.playerId });
 
     // שלח רשימת שחקנים באזור החדש
-    const playersInNewArea = Array.from(players.values())
-      .filter((p) => p.current_area === newArea)
+    const peers = Array.from(players.values())
+      .filter(pp => pp.current_area === newArea && pp.socketId !== socket.id)
       .map(safePlayerView);
 
-    socket.emit("current_players", playersInNewArea);
+    socket.emit("current_players", peers);
 
-    // הודע לשאר באזור החדש
-    socket.broadcast.emit("player_joined", safePlayerView(player));
+    // הודע לאחרים באזור החדש
+    socket.to(newArea).emit("player_joined", safePlayerView(p));
   });
 
-  // ==================== TRADE SYSTEM ====================
-  socket.on("trade_request", (data) => {
+  // ========== TRADE (מקוצר) ==========
+  socket.on("trade_request", (data = {}) => {
     const initiator = players.get(socket.id);
     if (!initiator) return;
 
-    const receiverSocketId = getSocketIdByPlayerId(data.receiver.id);
-    if (!receiverSocketId) return;
+    const recvSid = getSocketIdByPlayerId(data?.receiver?.id);
+    if (!recvSid) return;
 
-    const receiver = players.get(receiverSocketId);
-    if (!receiver) return;
-
-    const tradeId = `trade_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
+    const tradeId = `trade_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     const trade = {
       id: tradeId,
       initiatorId: initiator.playerId,
-      receiverId: receiver.playerId,
+      receiverId: players.get(recvSid)?.playerId,
       initiator_offer: { items: [], coins: 0, gems: 0 },
       receiver_offer: { items: [], coins: 0, gems: 0 },
       status: "pending",
     };
-
     activeTrades.set(tradeId, trade);
 
-    console.log(`🔄 Trade request: ${initiator.username} → ${receiver.username}`);
-
-    io.to(receiverSocketId).emit("trade_request_received", {
+    io.to(recvSid).emit("trade_request_received", {
       trade_id: tradeId,
       initiator: safePlayerView(initiator),
     });
   });
 
-  socket.on("trade_accept", (data) => {
-    const { trade_id } = data;
+  socket.on("trade_accept", ({ trade_id } = {}) => {
     const trade = activeTrades.get(trade_id);
     if (!trade) return;
-
     trade.status = "started";
     broadcastTradeStatus(trade_id, "started");
-
-    console.log(`✅ Trade accepted: ${trade_id}`);
   });
 
-  socket.on("trade_cancel", (data) => {
-    const { trade_id, reason } = data;
+  socket.on("trade_cancel", ({ trade_id, reason } = {}) => {
     const trade = activeTrades.get(trade_id);
     if (!trade) return;
-
     trade.status = "cancelled";
-    broadcastTradeStatus(trade_id, "cancelled", reason);
+    broadcastTradeStatus(trade_id, "cancelled", reason || "cancelled");
     activeTrades.delete(trade_id);
-
-    console.log(`❌ Trade cancelled: ${trade_id}`);
   });
 
-  // ==================== DISCONNECT ====================
-  socket.on("disconnect", () => {
-    const player = players.get(socket.id);
-    if (!player) return;
+  // ========== DISCONNECT ==========
+  socket.on("disconnect", (reason) => {
+    const p = players.get(socket.id);
+    if (!p) return;
 
-    console.log(`❌ Player disconnected: ${player.username}`);
+    console.log(`🔴 Disconnect: ${p.username} (${p.playerId}) | reason=${reason}`);
+    socket.to(p.current_area).emit("player_disconnected", p.playerId);
 
-    socket.broadcast.emit("player_disconnected", player.playerId);
+    // נקה טריידים פתוחים עם השחקן
+    for (const [tid, t] of activeTrades.entries()) {
+      if (t.initiatorId === p.playerId || t.receiverId === p.playerId) {
+        t.status = "cancelled";
+        broadcastTradeStatus(tid, "cancelled", "participant_disconnected");
+        activeTrades.delete(tid);
+      }
+    }
+
     players.delete(socket.id);
   });
 });
 
-// Start server
+// ---------- Start ----------
 httpServer.listen(PORT, () => {
+  console.log(`\n${"★".repeat(60)}`);
   console.log(`🚀 Touch World Server v${VERSION} - Port ${PORT}`);
   console.log(`🌍 https://touchworld-realtime.onrender.com`);
+  console.log(`${"★".repeat(60)}\n`);
 });
