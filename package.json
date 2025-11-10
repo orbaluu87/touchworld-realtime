@@ -1,7 +1,7 @@
 {
   "name": "touchworld-realtime",
   "version": "9.4.2",
-  "description": "Touch World - Socket.IO Server with Presence Sync (Base44 Integration)",
+  "description": "Touch World - Realtime Multiplayer Socket.IO Server with Presence Sync (Base44 Integration)",
   "main": "server.js",
   "type": "module",
   "scripts": {
@@ -12,7 +12,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "helmet": "^7.0.0",
+    "helmet": "^7.1.0",
     "node-fetch": "^3.3.2",
     "socket.io": "^4.7.5"
   },
@@ -20,21 +20,22 @@
     "nodemon": "^3.1.0"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   },
   "license": "MIT",
-  "keywords": [
-    "touchworld",
-    "socket.io",
-    "base44",
-    "multiplayer",
-    "game",
-    "presence-sync",
-    "server"
-  ],
   "author": "Or Balulu",
   "repository": {
     "type": "git",
     "url": "https://github.com/orbalulu/touchworld-realtime"
-  }
+  },
+  "keywords": [
+    "touchworld",
+    "socket.io",
+    "multiplayer",
+    "base44",
+    "express",
+    "helmet",
+    "realtime",
+    "render"
+  ]
 }
