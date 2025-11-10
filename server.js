@@ -8,7 +8,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
 // 🔒 Keys
 const JWT_SECRET = process.env.JWT_SECRET || process.env.WSS_JWT_SECRET;
@@ -174,7 +174,8 @@ app.get('/health', (req, res) => {
         timestamp: new Date().toISOString(),
         env: {
             jwt_secret: !!JWT_SECRET,
-            service_key: !!BASE44_SERVICE_KEY
+            service_key: !!BASE44_SERVICE_KEY,
+            port: PORT
         }
     });
 });
