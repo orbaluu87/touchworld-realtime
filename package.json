@@ -1,11 +1,12 @@
 {
   "name": "touch-world-server",
-  "version": "1.0.0",
-  "description": "Touch World Socket Server",
+  "version": "10.3.1",
+  "description": "Touch World Multiplayer Server",
   "main": "server.js",
   "type": "module",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "postinstall": "npm install"
   },
   "dependencies": {
     "cors": "^2.8.5",
