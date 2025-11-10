@@ -173,6 +173,8 @@ class GameServer {
         player.position_x = player.destination_x;
         player.position_y = player.destination_y;
         player.is_moving = false;
+        player.destination_x = null;
+        player.destination_y = null;
         player.animation_frame = "idle";
       } else {
         const moveDistance = Math.min(SPEED * deltaTime, distance);
@@ -206,11 +208,13 @@ class GameServer {
     if (!player) return;
 
     if (!this.validateMessage(message)) {
+      console.warn(`❌ Invalid message from ${player.username}`);
       this.io.to(socketId).emit("chat_error", "הודעה לא חוקית");
       return;
     }
 
     if (!this.checkRateLimit(player.userId, "chat", 5, 10000)) {
+      console.warn(`⚠️ Rate limit for ${player.username} (chat)`);
       this.io.to(socketId).emit("chat_error", "אתה שולח הודעות מהר מדי");
       return;
     }
@@ -218,12 +222,15 @@ class GameServer {
     const chatData = {
       id: player.playerId,
       playerId: player.playerId,
+      socketId: socketId,
       username: player.username,
+      admin_level: player.admin_level,
       message,
       timestamp: Date.now(),
     };
 
     this.io.emit("chat_message", chatData);
+    console.log(`💬 ${player.username}: ${message}`);
   }
 
   updatePlayerEquipment(socketId, equipment) {
@@ -253,6 +260,8 @@ class GameServer {
       from: oldArea,
       to: newAreaId,
     });
+
+    console.log(`🗺️ ${player.username} → ${newAreaId}`);
   }
 }
 
@@ -268,6 +277,10 @@ const io = new Server(server, {
     methods: ["GET", "POST"],
     credentials: true,
   },
+  pingTimeout: 60000,
+  pingInterval: 25000,
+  maxHttpBufferSize: 1e6,
+  allowEIO3: true,
 });
 
 const gameServer = new GameServer(io);
@@ -278,15 +291,22 @@ const gameServer = new GameServer(io);
 
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
-  if (!token) return next(new Error("Authentication token missing"));
+  if (!token) {
+    console.warn("❌ No token provided");
+    return next(new Error("Authentication token missing"));
+  }
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     socket.userId = decoded.userId;
     socket.playerId = decoded.playerId;
     socket.username = decoded.username;
+    socket.admin_level = decoded.admin_level || "user";
+
+    console.log(`✅ Auth success: ${decoded.username}`);
     next();
   } catch (err) {
+    console.error("❌ JWT failed:", err.message);
     return next(new Error("Invalid token"));
   }
 });
@@ -296,11 +316,14 @@ io.use((socket, next) => {
 // ============================================
 
 io.on("connection", (socket) => {
+  console.log(`🔌 Connected: ${socket.username} (${socket.id})`);
+
   const playerData = {
     socketId: socket.id,
     userId: socket.userId,
     playerId: socket.playerId,
     username: socket.username,
+    admin_level: socket.admin_level,
     current_area: "area1",
     position_x: 960,
     position_y: 540,
@@ -308,30 +331,104 @@ io.on("connection", (socket) => {
     is_moving: false,
     animation_frame: "idle",
     equipment: {},
+    is_trading: false,
   };
 
   gameServer.addPlayer(socket.id, playerData);
 
-  socket.emit("current_players", gameServer.getAllPlayers());
-  socket.broadcast.emit("player_joined", playerData);
+  socket.emit(
+    "current_players",
+    gameServer.getAllPlayers().map((p) => ({
+      id: p.playerId,
+      playerId: p.playerId,
+      socketId: p.socketId,
+      username: p.username,
+      admin_level: p.admin_level,
+      current_area: p.current_area,
+      position_x: p.position_x,
+      position_y: p.position_y,
+      direction: p.direction,
+      is_moving: p.is_moving,
+      animation_frame: p.animation_frame,
+      equipment: p.equipment,
+      skin_code: p.equipment?.skin_code,
+      is_trading: p.is_trading,
+    }))
+  );
+
+  socket.broadcast.emit("player_joined", {
+    id: playerData.playerId,
+    playerId: playerData.playerId,
+    socketId: socket.id,
+    username: playerData.username,
+    admin_level: playerData.admin_level,
+    current_area: playerData.current_area,
+    position_x: playerData.position_x,
+    position_y: playerData.position_y,
+    direction: playerData.direction,
+    equipment: playerData.equipment,
+    skin_code: playerData.equipment?.skin_code,
+  });
 
   socket.on("move_to", (data) => gameServer.queueMove(socket.id, data));
-  socket.on("chat_message", (msg) => gameServer.broadcastChatMessage(socket.id, msg));
+
+  socket.on("chat_message", (msg) =>
+    gameServer.broadcastChatMessage(socket.id, msg)
+  );
+
   socket.on("player_update", (data) => {
-    if (data.equipment) gameServer.updatePlayerEquipment(socket.id, data.equipment);
+    if (data.equipment)
+      gameServer.updatePlayerEquipment(socket.id, data.equipment);
   });
-  socket.on("area_change", (areaId) => gameServer.changePlayerArea(socket.id, areaId));
+
+  socket.on("area_change", (areaId) =>
+    gameServer.changePlayerArea(socket.id, areaId)
+  );
+
+  socket.on("trade_request", (data) => {
+    const sender = gameServer.getPlayer(socket.id);
+    if (!sender) return;
+
+    if (!gameServer.checkRateLimit(sender.userId, "trade_request", 3, 60000)) {
+      socket.emit("trade_error", "בקשות מהר מדי");
+      return;
+    }
+
+    const receiverId = data.receiver?.id;
+    const receiverSocket = Array.from(gameServer.players.entries()).find(
+      ([sid, p]) => p.playerId === receiverId
+    )?.[0];
+
+    if (receiverSocket) {
+      io.to(receiverSocket).emit("trade_request_received", {
+        trade_id: `trade_${Date.now()}_${socket.id}`,
+        initiator: {
+          id: sender.playerId,
+          username: sender.username,
+        },
+      });
+    }
+  });
 
   socket.on("disconnect", (reason) => {
-    gameServer.removePlayer(socket.id);
-    io.emit("player_disconnected", playerData.playerId);
-    console.log(`🔌 Disconnected: ${socket.username || socket.id} (${reason})`);
+    const player = gameServer.getPlayer(socket.id);
+    if (player) {
+      io.emit("player_disconnected", player.playerId);
+      gameServer.removePlayer(socket.id);
+    }
+    console.log(
+      `🔌 Disconnected: ${socket.username || socket.id} (${reason})`
+    );
   });
 });
 
 // ============================================
 // 🩺 HEALTH CHECK
 // ============================================
+
+app.get("/", (req, res) => {
+  res.send("🎮 Touch Game Server is Running!");
+});
 
 app.get("/health", (req, res) => {
   res.json({
@@ -346,6 +443,19 @@ app.get("/health", (req, res) => {
 // ============================================
 
 gameServer.startMovementLoop();
+
 server.listen(PORT, () => {
-  console.log(`🚀 Touch Game Server running on port ${PORT}`);
+  console.log(`\n🚀 Touch Game Server running on port ${PORT}`);
+  console.log(`📡 Socket.IO ready for connections`);
+  console.log(`🔒 Security: Rate limiting & validation enabled\n`);
+});
+
+process.on("SIGTERM", () => {
+  console.log("👋 Server shutting down...");
+  io.close(() => {
+    server.close(() => {
+      console.log("✅ Server closed");
+      process.exit(0);
+    });
+  });
 });
