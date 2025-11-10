@@ -8,7 +8,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 10000;
+const PORT = process.env.PORT || 3000;
 
 // 🔒 Keys
 const JWT_SECRET = process.env.JWT_SECRET || process.env.WSS_JWT_SECRET;
@@ -21,7 +21,8 @@ if (!JWT_SECRET) {
 }
 
 if (!BASE44_SERVICE_KEY) {
-    console.warn('⚠️ BASE44_SERVICE_KEY missing - player fetch may fail');
+    console.error('❌ BASE44_SERVICE_KEY missing!');
+    process.exit(1);
 }
 
 app.use(helmet());
@@ -72,7 +73,10 @@ app.post('/api/getGameConnectionDetails', async (req, res) => {
     try {
         const { playerId, userId } = req.body;
 
+        console.log('📥 Connection request:', { playerId, userId });
+
         if (!playerId || !userId) {
+            console.error('❌ Missing data');
             return res.status(400).json({ 
                 error: 'Missing data',
                 details: 'playerId and userId required'
@@ -82,29 +86,36 @@ app.post('/api/getGameConnectionDetails', async (req, res) => {
         // ✅ שליפת השחקן מ-Base44 עם SERVICE_KEY
         let player;
         try {
+            console.log('🔍 Fetching player from Base44...');
+            
             const response = await fetch(`${BASE44_API}/entities/Player/${playerId}`, {
+                method: 'GET',
                 headers: {
-                    'api_key': BASE44_SERVICE_KEY,
+                    'Authorization': `Bearer ${BASE44_SERVICE_KEY}`,
                     'Content-Type': 'application/json'
                 }
             });
 
+            console.log('📡 Base44 response status:', response.status);
+
             if (!response.ok) {
-                console.error('❌ Base44 API error:', response.status);
-                throw new Error('Failed to fetch player');
+                const errorText = await response.text();
+                console.error('❌ Base44 API error:', response.status, errorText);
+                throw new Error(`Base44 API returned ${response.status}`);
             }
             
             player = await response.json();
+            console.log('✅ Player fetched:', player.username);
             
             if (!player || player.user_id !== userId) {
-                console.error('❌ Player mismatch or not found');
-                return res.status(404).json({ 
-                    error: 'Player not found',
+                console.error('❌ Player verification failed');
+                return res.status(403).json({ 
+                    error: 'Forbidden',
                     details: 'Player verification failed'
                 });
             }
         } catch (error) {
-            console.error('❌ Database error:', error);
+            console.error('❌ Database error:', error.message);
             return res.status(500).json({ 
                 error: 'Database error',
                 details: error.message
@@ -148,7 +159,7 @@ app.post('/api/getGameConnectionDetails', async (req, res) => {
         });
 
     } catch (error) {
-        console.error('❌ Error:', error);
+        console.error('❌ Unexpected error:', error);
         res.status(500).json({ 
             error: 'Internal error',
             details: error.message
@@ -158,7 +169,14 @@ app.post('/api/getGameConnectionDetails', async (req, res) => {
 
 // ✅ Health Check
 app.get('/health', (req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+    res.json({ 
+        status: 'ok', 
+        timestamp: new Date().toISOString(),
+        env: {
+            jwt_secret: !!JWT_SECRET,
+            service_key: !!BASE44_SERVICE_KEY
+        }
+    });
 });
 
 // ✅ Start Server
@@ -171,7 +189,9 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 // ✅ Socket.IO
 const io = new Server(server, {
     cors: { origin: '*', methods: ['GET', 'POST'] },
-    transports: ['websocket', 'polling']
+    transports: ['websocket', 'polling'],
+    pingTimeout: 60000,
+    pingInterval: 25000
 });
 
 const players = new Map();
@@ -180,13 +200,16 @@ const players = new Map();
 io.use((socket, next) => {
     try {
         const token = socket.handshake.auth.token;
-        if (!token) return next(new Error('No token'));
+        if (!token) {
+            console.error('❌ No token in handshake');
+            return next(new Error('No token'));
+        }
 
         const decoded = jwt.verify(token, JWT_SECRET);
         socket.playerId = decoded.playerId;
         socket.playerData = decoded;
         
-        console.log(`✅ Authenticated: ${decoded.username}`);
+        console.log(`✅ Authenticated: ${decoded.username} (${decoded.playerId})`);
         next();
     } catch (err) {
         console.error('❌ Auth failed:', err.message);
@@ -197,7 +220,7 @@ io.use((socket, next) => {
 // ✅ Socket Connection
 io.on('connection', (socket) => {
     const pd = socket.playerData;
-    console.log(`✅ Player connected: ${pd.username}`);
+    console.log(`✅ Player connected: ${pd.username} (${socket.id})`);
 
     players.set(socket.playerId, {
         ...pd,
