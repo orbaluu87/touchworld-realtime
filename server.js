@@ -8,7 +8,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
 // 🔒 Keys
 const JWT_SECRET = process.env.JWT_SECRET || process.env.WSS_JWT_SECRET;
@@ -18,6 +18,10 @@ const BASE44_SERVICE_KEY = process.env.BASE44_SERVICE_KEY;
 if (!JWT_SECRET) {
     console.error('❌ JWT_SECRET missing!');
     process.exit(1);
+}
+
+if (!BASE44_SERVICE_KEY) {
+    console.warn('⚠️ BASE44_SERVICE_KEY missing - player fetch may fail');
 }
 
 app.use(helmet());
@@ -66,36 +70,48 @@ app.get('/api/getChatBubbleConfig', async (req, res) => {
 // ✅ API: Get Game Connection Details + Generate Token
 app.post('/api/getGameConnectionDetails', async (req, res) => {
     try {
-        const authHeader = req.headers.authorization;
-        if (!authHeader) {
-            return res.status(401).json({ error: 'No auth' });
+        const { playerId, userId } = req.body;
+
+        if (!playerId || !userId) {
+            return res.status(400).json({ 
+                error: 'Missing data',
+                details: 'playerId and userId required'
+            });
         }
 
-        const userToken = authHeader.replace('Bearer ', '');
-        
-        // Get player
+        // ✅ שליפת השחקן מ-Base44 עם SERVICE_KEY
         let player;
         try {
-            const response = await fetch(`${BASE44_API}/entities/Player`, {
+            const response = await fetch(`${BASE44_API}/entities/Player/${playerId}`, {
                 headers: {
-                    'Authorization': `Bearer ${userToken}`,
+                    'api_key': BASE44_SERVICE_KEY,
                     'Content-Type': 'application/json'
                 }
             });
 
-            if (!response.ok) throw new Error('Failed to fetch player');
+            if (!response.ok) {
+                console.error('❌ Base44 API error:', response.status);
+                throw new Error('Failed to fetch player');
+            }
             
-            const players = await response.json();
-            player = players && players.length > 0 ? players[0] : null;
+            player = await response.json();
+            
+            if (!player || player.user_id !== userId) {
+                console.error('❌ Player mismatch or not found');
+                return res.status(404).json({ 
+                    error: 'Player not found',
+                    details: 'Player verification failed'
+                });
+            }
         } catch (error) {
-            return res.status(500).json({ error: 'Failed to fetch player' });
+            console.error('❌ Database error:', error);
+            return res.status(500).json({ 
+                error: 'Database error',
+                details: error.message
+            });
         }
 
-        if (!player) {
-            return res.status(404).json({ error: 'Player not found' });
-        }
-
-        // Generate JWT
+        // ✅ יצירת JWT Token
         const payload = {
             jti: Math.random().toString(36).substring(2, 15),
             iat: Math.floor(Date.now() / 1000),
@@ -123,7 +139,7 @@ app.post('/api/getGameConnectionDetails', async (req, res) => {
             algorithm: 'HS256'
         });
 
-        console.log(`✅ Token for: ${player.username}`);
+        console.log(`✅ Token generated for: ${player.username}`);
 
         res.json({
             success: true,
@@ -133,20 +149,26 @@ app.post('/api/getGameConnectionDetails', async (req, res) => {
 
     } catch (error) {
         console.error('❌ Error:', error);
-        res.status(500).json({ error: 'Internal error', details: error.message });
+        res.status(500).json({ 
+            error: 'Internal error',
+            details: error.message
+        });
     }
 });
 
-// ✅ Health
+// ✅ Health Check
 app.get('/health', (req, res) => {
-    res.json({ status: 'ok' });
+    res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// ✅ Start Server
 const server = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Server on ${PORT}`);
+    console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`🔐 JWT_SECRET: ${JWT_SECRET ? '✅ Set' : '❌ Missing'}`);
+    console.log(`🔑 BASE44_SERVICE_KEY: ${BASE44_SERVICE_KEY ? '✅ Set' : '❌ Missing'}`);
 });
 
-// ✅ WebSocket
+// ✅ Socket.IO
 const io = new Server(server, {
     cors: { origin: '*', methods: ['GET', 'POST'] },
     transports: ['websocket', 'polling']
@@ -154,6 +176,7 @@ const io = new Server(server, {
 
 const players = new Map();
 
+// ✅ Socket Authentication
 io.use((socket, next) => {
     try {
         const token = socket.handshake.auth.token;
@@ -163,26 +186,29 @@ io.use((socket, next) => {
         socket.playerId = decoded.playerId;
         socket.playerData = decoded;
         
-        console.log(`✅ Auth: ${decoded.username}`);
+        console.log(`✅ Authenticated: ${decoded.username}`);
         next();
     } catch (err) {
-        console.error('❌ Auth fail:', err.message);
+        console.error('❌ Auth failed:', err.message);
         next(new Error('Auth failed'));
     }
 });
 
+// ✅ Socket Connection
 io.on('connection', (socket) => {
     const pd = socket.playerData;
-    console.log(`✅ Connected: ${pd.username}`);
+    console.log(`✅ Player connected: ${pd.username}`);
 
     players.set(socket.playerId, {
         ...pd,
         socketId: socket.id,
         position_x: pd.x,
         position_y: pd.y,
-        is_moving: false
+        is_moving: false,
+        direction: 's'
     });
 
+    // Send current players
     socket.emit('current_players', Array.from(players.values()).map(p => ({
         id: p.playerId,
         playerId: p.playerId,
@@ -196,6 +222,7 @@ io.on('connection', (socket) => {
         equipment: p.equipment
     })));
 
+    // Notify others
     socket.broadcast.emit('player_joined', {
         id: pd.playerId,
         playerId: pd.playerId,
@@ -209,6 +236,7 @@ io.on('connection', (socket) => {
         equipment: pd.equipment
     });
 
+    // Handle movement
     socket.on('move_to', (data) => {
         const player = players.get(socket.playerId);
         if (!player) return;
@@ -225,6 +253,7 @@ io.on('connection', (socket) => {
         }]);
     });
 
+    // Handle chat
     socket.on('chat_message', (data) => {
         const player = players.get(socket.playerId);
         if (!player) return;
@@ -239,6 +268,7 @@ io.on('connection', (socket) => {
         });
     });
 
+    // Handle area change
     socket.on('change_area', (data) => {
         const player = players.get(socket.playerId);
         if (!player) return;
@@ -250,11 +280,12 @@ io.on('connection', (socket) => {
         });
     });
 
+    // Handle disconnect
     socket.on('disconnect', () => {
-        console.log(`👋 Disc: ${pd.username}`);
+        console.log(`👋 Player disconnected: ${pd.username}`);
         players.delete(socket.playerId);
         io.emit('player_disconnected', socket.playerId);
     });
 });
 
-console.log('✅ Ready!');
+console.log('✅ Touch World Server Ready!');
