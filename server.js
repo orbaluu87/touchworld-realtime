@@ -1,5 +1,5 @@
 // ============================================================================
-// Touch World - Socket Server v10.1.0 - FIXED POSITION SYNC
+// Touch World - Socket Server v10.2.0 - FASTER & SYNCED!
 // ============================================================================
 
 import { createServer } from "http";
@@ -48,7 +48,7 @@ if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   process.exit(1);
 }
 
-const VERSION = "10.1.0";
+const VERSION = "10.2.0";
 
 // ---------- State ----------
 const players = new Map();
@@ -294,7 +294,6 @@ io.on("connection", async (socket) => {
     const { x, y } = data;
     if (typeof x !== "number" || typeof y !== "number") return;
 
-    // ✅ תיקון: שמור רק את היעד, לא מעדכן את המיקום מיד!
     p.destination_x = x;
     p.destination_y = y;
     p.is_moving = true;
@@ -326,7 +325,6 @@ io.on("connection", async (socket) => {
     if (typeof data.animation_frame === "string") p.animation_frame = data.animation_frame;
     if (data.equipment && typeof data.equipment === "object") p.equipment = data.equipment;
 
-    // שלח לכולם באזור
     io.to(p.current_area).emit("player_update", {
       id: p.playerId,
       playerId: p.playerId,
@@ -477,9 +475,9 @@ io.on("connection", async (socket) => {
   });
 });
 
-// ========== GAME LOOP - מעדכן מיקומים בצד השרת ==========
+// ========== GAME LOOP - ⚡ מהיר יותר! ==========
 setInterval(() => {
-  const updates = [];
+  const updatesByArea = new Map();
 
   for (const [sid, player] of players) {
     if (player.is_moving && player.destination_x !== undefined && player.destination_y !== undefined) {
@@ -488,20 +486,19 @@ setInterval(() => {
       const distance = Math.sqrt(dx * dx + dy * dy);
 
       if (distance < 5) {
-        // הגענו ליעד
         player.position_x = player.destination_x;
         player.position_y = player.destination_y;
         player.is_moving = false;
         player.destination_x = undefined;
         player.destination_y = undefined;
       } else {
-        // ממשיכים לזוז
-        const moveSpeed = 4; // מהירות התנועה
+        // ✅ מהירות מוגברת: 4 → 10 (פי 2.5 יותר מהיר!)
+        const moveSpeed = 10;
         player.position_x += (dx / distance) * moveSpeed;
         player.position_y += (dy / distance) * moveSpeed;
       }
 
-      updates.push({
+      const update = {
         id: player.playerId,
         playerId: player.playerId,
         socketId: sid,
@@ -510,21 +507,27 @@ setInterval(() => {
         direction: player.direction,
         is_moving: player.is_moving,
         animation_frame: player.is_moving ? "walk" : "idle",
-      });
+      };
+
+      if (!updatesByArea.has(player.current_area)) {
+        updatesByArea.set(player.current_area, []);
+      }
+      updatesByArea.get(player.current_area).push(update);
     }
   }
 
-  // שלח את כל העדכונים לכולם
-  if (updates.length > 0) {
-    io.emit("players_moved", updates);
+  // ✅ שלח עדכונים לפי אזור
+  for (const [areaId, updates] of updatesByArea) {
+    io.to(areaId).emit("players_moved", updates);
   }
-}, 50); // רענון כל 50ms (20 FPS)
+}, 50);
 
 // ---------- Start ----------
 httpServer.listen(PORT, () => {
   console.log(`\n${"★".repeat(60)}`);
   console.log(`🚀 Touch World Server v${VERSION} - Port ${PORT}`);
-  console.log(`✅ FIX: Accurate position sync with server-side movement`);
+  console.log(`✅ FIXED: Position sync + 2.5x faster movement!`);
+  console.log(`⚡ Move Speed: 10 (was 4)`);
   console.log(`🎮 Game Loop: 20 FPS (50ms)`);
   console.log(`🔐 JWT Rotation: ENABLED`);
   console.log(`🌍 https://touchworld-realtime.onrender.com`);
