@@ -1,24 +1,23 @@
 {
-  "name": "touchworld-realtime-server",
-  "version": "9.4.0",
-  "description": "Touch World Real-Time Game Server",
+  "name": "touch-world-server",
+  "version": "1.0.0",
+  "description": "Touch World WebSocket Server",
   "main": "server.js",
   "type": "module",
   "scripts": {
     "start": "node server.js"
   },
-  "keywords": ["websocket", "game-server", "socketio", "realtime"],
-  "author": "Touch World Team",
-  "license": "MIT",
+  "author": "Touch World",
+  "license": "ISC",
   "dependencies": {
-    "express": "^4.18.2",
-    "socket.io": "^4.6.1",
     "cors": "^2.8.5",
-    "helmet": "^7.1.0",
-    "dotenv": "^16.3.1",
-    "node-fetch": "^3.3.2"
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "helmet": "^8.0.0",
+    "node-fetch": "^3.3.2",
+    "socket.io": "^4.8.1"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": "20.x"
   }
 }
