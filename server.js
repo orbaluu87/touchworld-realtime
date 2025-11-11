@@ -1,5 +1,5 @@
 // ============================================================================
-// Touch World - Socket Server v9.4.0 - JWT Rotation + Debug Mode
+// Touch World - Socket Server v10.0.0 - FIXED DISAPPEARING PLAYERS
 // ============================================================================
 
 import { createServer } from "http";
@@ -36,19 +36,19 @@ const PORT = process.env.PORT || 10000;
 const JWT_SECRET = process.env.WSS_JWT_SECRET || process.env.JWT_SECRET;
 const VERIFY_TOKEN_URL =
   process.env.VERIFY_TOKEN_URL ||
-  "https://app.base44.com/api/apps/691308e1166733e71fb53d35/functions/verifyWebSocketToken";
+  "https://base44.app/api/apps/68e269394d8f2fa24e82cd71/functions/verifyWebSocketToken";
 const BASE44_SERVICE_KEY = process.env.BASE44_SERVICE_KEY;
 const BASE44_API_URL =
   process.env.BASE44_API_URL ||
-  "https://app.base44.com/api/apps/691308e1166733e71fb53d35";
+  "https://base44.app/api/apps/68e269394d8f2fa24e82cd71";
 const HEALTH_KEY = process.env.HEALTH_KEY || "secret-health";
 
 if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
-  console.error("❌ Missing security keys (JWT_SECRET/BASE44_SERVICE_KEY/HEALTH_KEY)");
+  console.error("❌ Missing security keys");
   process.exit(1);
 }
 
-const VERSION = "9.4.0";
+const VERSION = "10.0.0";
 
 // ---------- State ----------
 const players = new Map();
@@ -63,6 +63,7 @@ function safePlayerView(p) {
   return {
     id: p.playerId,
     playerId: p.playerId,
+    socketId: p.socketId,
     username: p.username,
     current_area: p.current_area,
     admin_level: p.admin_level,
@@ -104,6 +105,8 @@ function normalizeUserShape(userAny) {
       equipped_hat: pd?.equipped_hat,
       equipped_necklace: pd?.equipped_necklace,
       equipped_halo: pd?.equipped_halo,
+      equipped_shoes: pd?.equipped_shoes,
+      equipped_gloves: pd?.equipped_gloves,
       equipped_accessory: pd?.equipped_accessory,
       ...(pd?.equipment || {}),
     },
@@ -239,6 +242,7 @@ io.on("connection", async (socket) => {
     return;
   }
 
+  // Kick duplicate
   for (const [sid, p] of players.entries()) {
     if (p.playerId === user.playerId && sid !== socket.id) {
       console.log(`⚠️ Kicking duplicate session for ${p.username}`);
@@ -248,6 +252,7 @@ io.on("connection", async (socket) => {
     }
   }
 
+  // Register player
   const player = {
     socketId: socket.id,
     playerId: user.playerId,
@@ -279,6 +284,7 @@ io.on("connection", async (socket) => {
 
   console.log(`🟢 Connected: ${player.username} (${player.current_area}) | Socket: ${socket.id.substring(0, 8)}...`);
 
+  // ========== MOVE_TO ==========
   socket.on("move_to", (data = {}) => {
     const p = players.get(socket.id);
     if (!p) return;
@@ -307,10 +313,12 @@ io.on("connection", async (socket) => {
       p._lastMoveLogAt = t;
     }
 
+    // ✅ תיקון קריטי: שלח לכל השחקנים באזור (כולל השולח!)
     io.to(p.current_area).emit("players_moved", [
       {
         id: p.playerId,
         playerId: p.playerId,
+        socketId: p.socketId,
         position_x: p.position_x,
         position_y: p.position_y,
         is_moving: p.is_moving,
@@ -320,6 +328,7 @@ io.on("connection", async (socket) => {
     ]);
   });
 
+  // ========== PLAYER_UPDATE ==========
   socket.on("player_update", (data = {}) => {
     const p = players.get(socket.id);
     if (!p) return;
@@ -331,9 +340,16 @@ io.on("connection", async (socket) => {
     if (typeof data.animation_frame === "string") p.animation_frame = data.animation_frame;
     if (data.equipment && typeof data.equipment === "object") p.equipment = data.equipment;
 
-    socket.to(p.current_area).emit("player_update", safePlayerView(p));
+    // ✅ תיקון: שלח לכל השחקנים באזור (כולל השולח!)
+    io.to(p.current_area).emit("player_update", {
+      id: p.playerId,
+      playerId: p.playerId,
+      socketId: p.socketId,
+      equipment: p.equipment,
+    });
   });
 
+  // ========== CHAT_MESSAGE ==========
   socket.on("chat_message", (data = {}) => {
     const p = players.get(socket.id);
     if (!p) return;
@@ -362,6 +378,7 @@ io.on("connection", async (socket) => {
     console.log(`💬 [${p.current_area}] ${p.username}: ${msg}`);
   });
 
+  // ========== ADMIN_SYSTEM_MESSAGE ==========
   socket.on("admin_system_message", (messageData = {}) => {
     const adminPlayer = players.get(socket.id);
     if (!adminPlayer) return;
@@ -386,6 +403,7 @@ io.on("connection", async (socket) => {
     }
   });
 
+  // ========== CHANGE_AREA ==========
   socket.on("change_area", (data = {}) => {
     const p = players.get(socket.id);
     if (!p) return;
@@ -401,7 +419,7 @@ io.on("connection", async (socket) => {
 
     console.log(`🚪 ${p.username} moved: ${oldArea} → ${newArea}`);
 
-    socket.to(oldArea).emit("player_area_changed", { id: p.playerId });
+    socket.to(oldArea).emit("player_area_changed", { id: p.playerId, playerId: p.playerId });
 
     const peers = Array.from(players.values())
       .filter(pp => pp.current_area === newArea && pp.socketId !== socket.id)
@@ -411,6 +429,7 @@ io.on("connection", async (socket) => {
     socket.to(newArea).emit("player_joined", safePlayerView(p));
   });
 
+  // ========== TRADE ==========
   socket.on("trade_request", (data = {}) => {
     const initiator = players.get(socket.id);
     if (!initiator) return;
@@ -450,6 +469,7 @@ io.on("connection", async (socket) => {
     activeTrades.delete(trade_id);
   });
 
+  // ========== DISCONNECT ==========
   socket.on("disconnect", (reason) => {
     const p = players.get(socket.id);
     if (!p) return;
@@ -475,7 +495,8 @@ io.on("connection", async (socket) => {
 httpServer.listen(PORT, () => {
   console.log(`\n${"★".repeat(60)}`);
   console.log(`🚀 Touch World Server v${VERSION} - Port ${PORT}`);
+  console.log(`✅ FIX: Players no longer disappear when moving`);
   console.log(`🔐 JWT Rotation: ENABLED (1h expiry + unique JTI)`);
-  console.log(`🌍 Server Ready`);
+  console.log(`🌍 https://touchworld-realtime.onrender.com`);
   console.log(`${"★".repeat(60)}\n`);
 });
