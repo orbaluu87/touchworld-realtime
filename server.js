@@ -1,5 +1,5 @@
 // ============================================================================
-// Touch World - Socket Server v10.3.0 - STEALTH MODE ENABLED!
+// Touch World - Socket Server v10.4.0 - ADMIN MODERATION!
 // ============================================================================
 
 import { createServer } from "http";
@@ -48,7 +48,7 @@ if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   process.exit(1);
 }
 
-const VERSION = "10.3.0";
+const VERSION = "10.4.0";
 
 // ---------- State ----------
 const players = new Map();
@@ -75,7 +75,7 @@ function safePlayerView(p) {
     animation_frame: p.animation_frame || "idle",
     move_speed: 120,
     is_trading: !!p.activeTradeId,
-    is_invisible: !!p.is_invisible, // ✅ הוספתי!
+    is_invisible: !!p.is_invisible,
   };
 }
 
@@ -115,7 +115,7 @@ function normalizeUserShape(userAny) {
     position_y: Number.isFinite(pd?.position_y) ? pd.position_y : 400,
     direction: pd?.direction ?? "front",
     keep_away_mode: !!pd?.keep_away_mode,
-    is_invisible: !!pd?.is_invisible, // ✅ הוספתי!
+    is_invisible: !!pd?.is_invisible,
   };
 }
 
@@ -271,7 +271,7 @@ io.on("connection", async (socket) => {
     animation_frame: "idle",
     destination_x: undefined,
     destination_y: undefined,
-    is_invisible: user.is_invisible ?? false, // ✅ הוספתי!
+    is_invisible: user.is_invisible ?? false,
     keep_away_mode: user.keep_away_mode ?? false,
     _lastMoveLogAt: 0,
     _tokenJTI: user.jti,
@@ -336,14 +336,37 @@ io.on("connection", async (socket) => {
       console.log(`👻 ${p.username} invisibility: ${data.is_invisible}`);
     }
 
-    // ✅ שדר את העדכון לכל השחקנים באזור
     io.to(p.current_area).emit("player_update", {
       id: p.playerId,
       playerId: p.playerId,
       socketId: p.socketId,
       equipment: p.equipment,
-      is_invisible: p.is_invisible, // ✅ הוספתי!
+      is_invisible: p.is_invisible,
     });
+  });
+
+  // ========== ADMIN_KICK_PLAYER ==========
+  socket.on("admin_kick_player", (data = {}) => {
+    const admin = players.get(socket.id);
+    if (!admin || admin.admin_level !== 'admin') return;
+
+    const targetPlayerId = data.target_player_id;
+    if (!targetPlayerId) return;
+
+    const targetSocketId = getSocketIdByPlayerId(targetPlayerId);
+    if (!targetSocketId) return;
+
+    const targetPlayer = players.get(targetSocketId);
+    if (!targetPlayer) return;
+
+    console.log(`👢 Admin ${admin.username} kicked ${targetPlayer.username}`);
+
+    io.to(targetSocketId).emit("kicked_by_admin");
+    
+    setTimeout(() => {
+      io.sockets.sockets.get(targetSocketId)?.disconnect(true);
+      players.delete(targetSocketId);
+    }, 1000);
   });
 
   // ========== CHAT_MESSAGE ==========
@@ -488,7 +511,7 @@ io.on("connection", async (socket) => {
   });
 });
 
-// ========== GAME LOOP - ⚡ מהיר יותר! ==========
+// ========== GAME LOOP ==========
 setInterval(() => {
   const updatesByArea = new Map();
 
@@ -505,7 +528,6 @@ setInterval(() => {
         player.destination_x = undefined;
         player.destination_y = undefined;
       } else {
-        // ✅ מהירות מוגברת: 4 → 10 (פי 2.5 יותר מהיר!)
         const moveSpeed = 10;
         player.position_x += (dx / distance) * moveSpeed;
         player.position_y += (dy / distance) * moveSpeed;
@@ -520,7 +542,7 @@ setInterval(() => {
         direction: player.direction,
         is_moving: player.is_moving,
         animation_frame: player.is_moving ? "walk" : "idle",
-        is_invisible: player.is_invisible, // ✅ הוספתי!
+        is_invisible: player.is_invisible,
       };
 
       if (!updatesByArea.has(player.current_area)) {
@@ -530,7 +552,6 @@ setInterval(() => {
     }
   }
 
-  // ✅ שלח עדכונים לפי אזור
   for (const [areaId, updates] of updatesByArea) {
     io.to(areaId).emit("players_moved", updates);
   }
@@ -540,11 +561,11 @@ setInterval(() => {
 httpServer.listen(PORT, () => {
   console.log(`\n${"★".repeat(60)}`);
   console.log(`🚀 Touch World Server v${VERSION} - Port ${PORT}`);
-  console.log(`✅ STEALTH MODE: Invisibility sync enabled!`);
-  console.log(`⚡ Move Speed: 10 (was 4)`);
+  console.log(`✅ ADMIN MODERATION: Ban, Kick, Mute enabled!`);
+  console.log(`👻 STEALTH MODE: Invisibility sync enabled!`);
+  console.log(`⚡ Move Speed: 10 pixels/tick`);
   console.log(`🎮 Game Loop: 20 FPS (50ms)`);
   console.log(`🔐 JWT Rotation: ENABLED`);
-  console.log(`👻 Admin Stealth: ACTIVE`);
   console.log(`🌍 https://touchworld-realtime.onrender.com`);
   console.log(`${"★".repeat(60)}\n`);
 });
