@@ -1,5 +1,5 @@
 // ============================================================================
-// Touch World - Socket Server v10.2.0 - FASTER & SYNCED!
+// Touch World - Socket Server v10.3.0 - STEALTH MODE ENABLED!
 // ============================================================================
 
 import { createServer } from "http";
@@ -48,7 +48,7 @@ if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   process.exit(1);
 }
 
-const VERSION = "10.2.0";
+const VERSION = "10.3.0";
 
 // ---------- State ----------
 const players = new Map();
@@ -75,6 +75,7 @@ function safePlayerView(p) {
     animation_frame: p.animation_frame || "idle",
     move_speed: 120,
     is_trading: !!p.activeTradeId,
+    is_invisible: !!p.is_invisible, // ✅ הוספתי!
   };
 }
 
@@ -114,7 +115,7 @@ function normalizeUserShape(userAny) {
     position_y: Number.isFinite(pd?.position_y) ? pd.position_y : 400,
     direction: pd?.direction ?? "front",
     keep_away_mode: !!pd?.keep_away_mode,
-    is_invisible: !!pd?.is_invisible,
+    is_invisible: !!pd?.is_invisible, // ✅ הוספתי!
   };
 }
 
@@ -149,6 +150,7 @@ async function verifyTokenWithBase44(token) {
     
     console.log(`✅ Token OK: ${normalized.username} (${normalized.playerId})`);
     console.log(`   🔐 JTI: ${jtiShort}... | IAT: ${iatTime}`);
+    console.log(`   👻 Invisible: ${normalized.is_invisible}`);
     
     return normalized;
   } catch (err) {
@@ -211,6 +213,7 @@ app.get("/health", (req, res) => {
       id: p.playerId,
       user: p.username,
       area: p.current_area,
+      invisible: p.is_invisible,
     })),
   });
 });
@@ -268,6 +271,8 @@ io.on("connection", async (socket) => {
     animation_frame: "idle",
     destination_x: undefined,
     destination_y: undefined,
+    is_invisible: user.is_invisible ?? false, // ✅ הוספתי!
+    keep_away_mode: user.keep_away_mode ?? false,
     _lastMoveLogAt: 0,
     _tokenJTI: user.jti,
     _tokenIAT: user.iat,
@@ -284,7 +289,7 @@ io.on("connection", async (socket) => {
   socket.emit("current_players", areaPeers);
   socket.to(player.current_area).emit("player_joined", safePlayerView(player));
 
-  console.log(`🟢 Connected: ${player.username} (${player.current_area}) | Socket: ${socket.id.substring(0, 8)}...`);
+  console.log(`🟢 Connected: ${player.username} (${player.current_area}) | Socket: ${socket.id.substring(0, 8)}... | Invisible: ${player.is_invisible}`);
 
   // ========== MOVE_TO ==========
   socket.on("move_to", (data = {}) => {
@@ -324,12 +329,20 @@ io.on("connection", async (socket) => {
     if (typeof data.is_moving === "boolean") p.is_moving = data.is_moving;
     if (typeof data.animation_frame === "string") p.animation_frame = data.animation_frame;
     if (data.equipment && typeof data.equipment === "object") p.equipment = data.equipment;
+    
+    // ✅ עדכון מצב התגנבות!
+    if (typeof data.is_invisible === "boolean") {
+      p.is_invisible = data.is_invisible;
+      console.log(`👻 ${p.username} invisibility: ${data.is_invisible}`);
+    }
 
+    // ✅ שדר את העדכון לכל השחקנים באזור
     io.to(p.current_area).emit("player_update", {
       id: p.playerId,
       playerId: p.playerId,
       socketId: p.socketId,
       equipment: p.equipment,
+      is_invisible: p.is_invisible, // ✅ הוספתי!
     });
   });
 
@@ -507,6 +520,7 @@ setInterval(() => {
         direction: player.direction,
         is_moving: player.is_moving,
         animation_frame: player.is_moving ? "walk" : "idle",
+        is_invisible: player.is_invisible, // ✅ הוספתי!
       };
 
       if (!updatesByArea.has(player.current_area)) {
@@ -526,10 +540,11 @@ setInterval(() => {
 httpServer.listen(PORT, () => {
   console.log(`\n${"★".repeat(60)}`);
   console.log(`🚀 Touch World Server v${VERSION} - Port ${PORT}`);
-  console.log(`✅ FIXED: Position sync + 2.5x faster movement!`);
+  console.log(`✅ STEALTH MODE: Invisibility sync enabled!`);
   console.log(`⚡ Move Speed: 10 (was 4)`);
   console.log(`🎮 Game Loop: 20 FPS (50ms)`);
   console.log(`🔐 JWT Rotation: ENABLED`);
+  console.log(`👻 Admin Stealth: ACTIVE`);
   console.log(`🌍 https://touchworld-realtime.onrender.com`);
   console.log(`${"★".repeat(60)}\n`);
 });
