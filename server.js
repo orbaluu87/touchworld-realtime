@@ -1,5 +1,5 @@
 // ============================================================================
-// Touch World - Socket Server v10.4.0 - ADMIN MODERATION!
+// Touch World - Socket Server v10.5.0 - KEEP AWAY + ADMIN MODERATION
 // ============================================================================
 
 import { createServer } from "http";
@@ -48,12 +48,15 @@ if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   process.exit(1);
 }
 
-const VERSION = "10.4.0";
+const VERSION = "10.5.0";
 
 // ---------- State ----------
 const players = new Map();
 const activeTrades = new Map();
 const chatRateLimit = new Map();
+
+// 🚫 הגדרת רדיוס שמירת מרחק (פיקסלים)
+const KEEP_AWAY_RADIUS = 200;
 
 // ---------- Helpers ----------
 const now = () => Date.now();
@@ -150,12 +153,90 @@ async function verifyTokenWithBase44(token) {
     
     console.log(`✅ Token OK: ${normalized.username} (${normalized.playerId})`);
     console.log(`   🔐 JTI: ${jtiShort}... | IAT: ${iatTime}`);
-    console.log(`   👻 Invisible: ${normalized.is_invisible}`);
+    console.log(`   👻 Invisible: ${normalized.is_invisible} | 🚫 Keep-Away: ${normalized.keep_away_mode}`);
     
     return normalized;
   } catch (err) {
     console.error("❌ Token Error:", err.message);
     return null;
+  }
+}
+
+// 🚫 פונקציה לחישוב מרחק בין שתי נקודות
+function calculateDistance(x1, y1, x2, y2) {
+  return Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2));
+}
+
+// 🚫 פונקציה לחישוב נקודה בטוחה מחוץ לרדיוס
+function calculateSafePosition(playerX, playerY, adminX, adminY, radius) {
+  const dx = playerX - adminX;
+  const dy = playerY - adminY;
+  const distance = Math.sqrt(dx * dx + dy * dy);
+  
+  if (distance === 0) {
+    // אם השחקן בדיוק על המנהל, דחף אותו ימינה
+    return { x: adminX + radius + 10, y: adminY };
+  }
+  
+  // חשב כיוון נורמלי
+  const nx = dx / distance;
+  const ny = dy / distance;
+  
+  // דחף את השחקן החוצה + מרווח בטחון
+  const safeX = adminX + nx * (radius + 20);
+  const safeY = adminY + ny * (radius + 20);
+  
+  return { x: safeX, y: safeY };
+}
+
+// 🚫 פונקציה לדחיפת שחקנים מסביב למנהל
+function pushAwayNearbyPlayers(adminPlayer, areaId) {
+  const playersInArea = Array.from(players.values()).filter(
+    p => p.current_area === areaId && p.playerId !== adminPlayer.playerId && p.admin_level === 'user'
+  );
+
+  const movedPlayers = [];
+
+  for (const player of playersInArea) {
+    const distance = calculateDistance(
+      player.position_x,
+      player.position_y,
+      adminPlayer.position_x,
+      adminPlayer.position_y
+    );
+
+    if (distance < KEEP_AWAY_RADIUS) {
+      const safePos = calculateSafePosition(
+        player.position_x,
+        player.position_y,
+        adminPlayer.position_x,
+        adminPlayer.position_y,
+        KEEP_AWAY_RADIUS
+      );
+
+      player.position_x = safePos.x;
+      player.position_y = safePos.y;
+      player.is_moving = false;
+      player.destination_x = undefined;
+      player.destination_y = undefined;
+
+      movedPlayers.push({
+        id: player.playerId,
+        playerId: player.playerId,
+        socketId: player.socketId,
+        position_x: player.position_x,
+        position_y: player.position_y,
+        is_moving: false,
+        direction: player.direction,
+        animation_frame: "idle",
+      });
+
+      console.log(`🚫 Pushed ${player.username} away from admin ${adminPlayer.username}`);
+    }
+  }
+
+  if (movedPlayers.length > 0) {
+    io.to(areaId).emit("players_moved", movedPlayers);
   }
 }
 
@@ -214,6 +295,7 @@ app.get("/health", (req, res) => {
       user: p.username,
       area: p.current_area,
       invisible: p.is_invisible,
+      keepAway: p.keep_away_mode,
     })),
   });
 });
@@ -289,15 +371,41 @@ io.on("connection", async (socket) => {
   socket.emit("current_players", areaPeers);
   socket.to(player.current_area).emit("player_joined", safePlayerView(player));
 
-  console.log(`🟢 Connected: ${player.username} (${player.current_area}) | Socket: ${socket.id.substring(0, 8)}... | Invisible: ${player.is_invisible}`);
+  console.log(`🟢 Connected: ${player.username} (${player.current_area}) | Socket: ${socket.id.substring(0, 8)}... | Invisible: ${player.is_invisible} | Keep-Away: ${player.keep_away_mode}`);
 
   // ========== MOVE_TO ==========
   socket.on("move_to", (data = {}) => {
     const p = players.get(socket.id);
     if (!p) return;
 
-    const { x, y } = data;
+    let { x, y } = data;
     if (typeof x !== "number" || typeof y !== "number") return;
+
+    // 🚫 בדיקה: האם השחקן מנסה להיכנס לרדיוס של מנהל עם keep_away_mode
+    if (p.admin_level === 'user') {
+      const adminsInArea = Array.from(players.values()).filter(
+        admin => admin.current_area === p.current_area && 
+                admin.admin_level === 'admin' && 
+                admin.keep_away_mode === true
+      );
+
+      for (const admin of adminsInArea) {
+        const distanceToAdmin = calculateDistance(x, y, admin.position_x, admin.position_y);
+        
+        if (distanceToAdmin < KEEP_AWAY_RADIUS) {
+          // ✅ מנע כניסה לרדיוס - עצור את השחקן במיקום הנוכחי
+          console.log(`🚫 Blocked ${p.username} from entering ${admin.username}'s keep-away zone`);
+          
+          // שלח למשתמש שהוא לא יכול להתקרב
+          socket.emit("keep_away_blocked", {
+            message: `לא ניתן להתקרב למנהל ${admin.username}`,
+            admin_username: admin.username
+          });
+          
+          return; // בטל את התנועה לגמרי
+        }
+      }
+    }
 
     p.destination_x = x;
     p.destination_y = y;
@@ -330,10 +438,21 @@ io.on("connection", async (socket) => {
     if (typeof data.animation_frame === "string") p.animation_frame = data.animation_frame;
     if (data.equipment && typeof data.equipment === "object") p.equipment = data.equipment;
     
-    // ✅ עדכון מצב התגנבות!
+    // ✅ עדכון מצב התגנבות
     if (typeof data.is_invisible === "boolean") {
       p.is_invisible = data.is_invisible;
       console.log(`👻 ${p.username} invisibility: ${data.is_invisible}`);
+    }
+
+    // 🚫 עדכון מצב keep_away_mode
+    if (typeof data.keep_away_mode === "boolean") {
+      p.keep_away_mode = data.keep_away_mode;
+      
+      // אם הופעל keep_away_mode, דחף שחקנים קרובים
+      if (data.keep_away_mode && p.admin_level === 'admin') {
+        console.log(`🚫 ${p.username} enabled keep-away mode`);
+        pushAwayNearbyPlayers(p, p.current_area);
+      }
     }
 
     io.to(p.current_area).emit("player_update", {
@@ -533,6 +652,43 @@ setInterval(() => {
         player.position_y += (dy / distance) * moveSpeed;
       }
 
+      // 🚫 בדיקת keep-away בזמן תנועה
+      if (player.admin_level === 'user') {
+        const adminsInArea = Array.from(players.values()).filter(
+          admin => admin.current_area === player.current_area && 
+                  admin.admin_level === 'admin' && 
+                  admin.keep_away_mode === true
+        );
+
+        for (const admin of adminsInArea) {
+          const distanceToAdmin = calculateDistance(
+            player.position_x,
+            player.position_y,
+            admin.position_x,
+            admin.position_y
+          );
+
+          if (distanceToAdmin < KEEP_AWAY_RADIUS) {
+            // עצור את התנועה ודחף החוצה
+            const safePos = calculateSafePosition(
+              player.position_x,
+              player.position_y,
+              admin.position_x,
+              admin.position_y,
+              KEEP_AWAY_RADIUS
+            );
+
+            player.position_x = safePos.x;
+            player.position_y = safePos.y;
+            player.is_moving = false;
+            player.destination_x = undefined;
+            player.destination_y = undefined;
+
+            console.log(`🚫 Auto-pushed ${player.username} from admin ${admin.username}`);
+          }
+        }
+      }
+
       const update = {
         id: player.playerId,
         playerId: player.playerId,
@@ -563,6 +719,7 @@ httpServer.listen(PORT, () => {
   console.log(`🚀 Touch World Server v${VERSION} - Port ${PORT}`);
   console.log(`✅ ADMIN MODERATION: Ban, Kick, Mute enabled!`);
   console.log(`👻 STEALTH MODE: Invisibility sync enabled!`);
+  console.log(`🚫 KEEP-AWAY MODE: ${KEEP_AWAY_RADIUS}px radius protection!`);
   console.log(`⚡ Move Speed: 10 pixels/tick`);
   console.log(`🎮 Game Loop: 20 FPS (50ms)`);
   console.log(`🔐 JWT Rotation: ENABLED`);
