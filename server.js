@@ -1,14 +1,14 @@
 // ============================================================================
-// Touch World - Socket Server v10.5.0 - KEEP AWAY + ADMIN MODERATION
+// Touch World - Socket Server v10.7.0 - FIXED TRADE SYSTEM
 // ============================================================================
 
-import { createServer } from "http";
-import express from "express";
-import cors from "cors";
-import helmet from "helmet";
-import { Server } from "socket.io";
-import fetch from "node-fetch";
-import "dotenv/config";
+const { createServer } = require("http");
+const express = require("express");
+const cors = require("cors");
+const helmet = require("helmet");
+const { Server } = require("socket.io");
+const fetch = require("node-fetch");
+require("dotenv").config();
 
 const app = express();
 app.use(express.json());
@@ -48,14 +48,13 @@ if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   process.exit(1);
 }
 
-const VERSION = "10.5.0";
+const VERSION = "10.7.0";
 
 // ---------- State ----------
 const players = new Map();
 const activeTrades = new Map();
 const chatRateLimit = new Map();
 
-// 🚫 הגדרת רדיוס שמירת מרחק (פיקסלים)
 const KEEP_AWAY_RADIUS = 200;
 
 // ---------- Helpers ----------
@@ -149,11 +148,7 @@ async function verifyTokenWithBase44(token) {
     }
 
     const jtiShort = normalized.jti ? normalized.jti.substring(0, 8) : 'N/A';
-    const iatTime = normalized.iat ? new Date(normalized.iat * 1000).toLocaleTimeString('he-IL') : 'N/A';
-    
-    console.log(`✅ Token OK: ${normalized.username} (${normalized.playerId})`);
-    console.log(`   🔐 JTI: ${jtiShort}... | IAT: ${iatTime}`);
-    console.log(`   👻 Invisible: ${normalized.is_invisible} | 🚫 Keep-Away: ${normalized.keep_away_mode}`);
+    console.log(`✅ Token OK: ${normalized.username} (${normalized.playerId}) | JTI: ${jtiShort}...`);
     
     return normalized;
   } catch (err) {
@@ -162,35 +157,29 @@ async function verifyTokenWithBase44(token) {
   }
 }
 
-// 🚫 פונקציה לחישוב מרחק בין שתי נקודות
 function calculateDistance(x1, y1, x2, y2) {
   return Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2));
 }
 
-// 🚫 פונקציה לחישוב נקודה בטוחה מחוץ לרדיוס
 function calculateSafePosition(playerX, playerY, adminX, adminY, radius) {
   const dx = playerX - adminX;
   const dy = playerY - adminY;
   const distance = Math.sqrt(dx * dx + dy * dy);
   
   if (distance === 0) {
-    // אם השחקן בדיוק על המנהל, דחף אותו ימינה
     return { x: adminX + radius + 10, y: adminY };
   }
   
-  // חשב כיוון נורמלי
   const nx = dx / distance;
   const ny = dy / distance;
   
-  // דחף את השחקן החוצה + מרווח בטחון
   const safeX = adminX + nx * (radius + 20);
   const safeY = adminY + ny * (radius + 20);
   
   return { x: safeX, y: safeY };
 }
 
-// 🚫 פונקציה לדחיפת שחקנים מסביב למנהל
-function pushAwayNearbyPlayers(adminPlayer, areaId) {
+function pushAwayNearbyPlayers(adminPlayer, areaId, io) {
   const playersInArea = Array.from(players.values()).filter(
     p => p.current_area === areaId && p.playerId !== adminPlayer.playerId && p.admin_level === 'user'
   );
@@ -267,14 +256,43 @@ async function executeTradeOnBase44(trade) {
   }
 }
 
-function broadcastTradeStatus(tradeId, status, reason = null) {
+function broadcastTradeUpdate(tradeId, io) {
   const trade = activeTrades.get(tradeId);
   if (!trade) return;
+  
   const initSid = getSocketIdByPlayerId(trade.initiatorId);
   const recvSid = getSocketIdByPlayerId(trade.receiverId);
-  const payload = { tradeId, status, reason };
-  if (initSid) io.to(initSid).emit("trade_status_updated", payload);
-  if (recvSid) io.to(recvSid).emit("trade_status_updated", payload);
+  
+  const initiatorPlayer = players.get(initSid);
+  const receiverPlayer = players.get(recvSid);
+  
+  const payload = {
+    id: tradeId,
+    status: trade.status,
+    initiator: {
+      id: trade.initiatorId,
+      username: initiatorPlayer?.username || "Unknown",
+      ready: trade.initiator_ready || false,
+      equipment: initiatorPlayer?.equipment || {},
+    },
+    receiver: {
+      id: trade.receiverId,
+      username: receiverPlayer?.username || "Unknown",
+      ready: trade.receiver_ready || false,
+      equipment: receiverPlayer?.equipment || {},
+    },
+    initiator_offer: trade.initiator_offer,
+    receiver_offer: trade.receiver_offer,
+  };
+  
+  if (initSid) {
+    console.log(`📤 Sending to initiator ${initiatorPlayer?.username}`);
+    io.to(initSid).emit("trade_status_updated", payload);
+  }
+  if (recvSid) {
+    console.log(`📤 Sending to receiver ${receiverPlayer?.username}`);
+    io.to(recvSid).emit("trade_status_updated", payload);
+  }
 }
 
 // ---------- Health ----------
@@ -355,6 +373,7 @@ io.on("connection", async (socket) => {
     destination_y: undefined,
     is_invisible: user.is_invisible ?? false,
     keep_away_mode: user.keep_away_mode ?? false,
+    activeTradeId: null,
     _lastMoveLogAt: 0,
     _tokenJTI: user.jti,
     _tokenIAT: user.iat,
@@ -371,7 +390,7 @@ io.on("connection", async (socket) => {
   socket.emit("current_players", areaPeers);
   socket.to(player.current_area).emit("player_joined", safePlayerView(player));
 
-  console.log(`🟢 Connected: ${player.username} (${player.current_area}) | Socket: ${socket.id.substring(0, 8)}... | Invisible: ${player.is_invisible} | Keep-Away: ${player.keep_away_mode}`);
+  console.log(`🟢 Connected: ${player.username} (${player.current_area})`);
 
   // ========== MOVE_TO ==========
   socket.on("move_to", (data = {}) => {
@@ -381,7 +400,6 @@ io.on("connection", async (socket) => {
     let { x, y } = data;
     if (typeof x !== "number" || typeof y !== "number") return;
 
-    // 🚫 בדיקה: האם השחקן מנסה להיכנס לרדיוס של מנהל עם keep_away_mode
     if (p.admin_level === 'user') {
       const adminsInArea = Array.from(players.values()).filter(
         admin => admin.current_area === p.current_area && 
@@ -393,16 +411,11 @@ io.on("connection", async (socket) => {
         const distanceToAdmin = calculateDistance(x, y, admin.position_x, admin.position_y);
         
         if (distanceToAdmin < KEEP_AWAY_RADIUS) {
-          // ✅ מנע כניסה לרדיוס - עצור את השחקן במיקום הנוכחי
-          console.log(`🚫 Blocked ${p.username} from entering ${admin.username}'s keep-away zone`);
-          
-          // שלח למשתמש שהוא לא יכול להתקרב
           socket.emit("keep_away_blocked", {
             message: `לא ניתן להתקרב למנהל ${admin.username}`,
             admin_username: admin.username
           });
-          
-          return; // בטל את התנועה לגמרי
+          return;
         }
       }
     }
@@ -418,12 +431,6 @@ io.on("connection", async (socket) => {
     } else if (Math.abs(dy) > 0) {
       p.direction = dy > 0 ? "s" : "n";
     }
-
-    const t = now();
-    if (!p._lastMoveLogAt || t - p._lastMoveLogAt > 3000) {
-      console.log(`🚶 ${p.username} → target:(${Math.round(x)}, ${Math.round(y)}) | ${p.current_area}`);
-      p._lastMoveLogAt = t;
-    }
   });
 
   // ========== PLAYER_UPDATE ==========
@@ -438,20 +445,15 @@ io.on("connection", async (socket) => {
     if (typeof data.animation_frame === "string") p.animation_frame = data.animation_frame;
     if (data.equipment && typeof data.equipment === "object") p.equipment = data.equipment;
     
-    // ✅ עדכון מצב התגנבות
     if (typeof data.is_invisible === "boolean") {
       p.is_invisible = data.is_invisible;
-      console.log(`👻 ${p.username} invisibility: ${data.is_invisible}`);
     }
 
-    // 🚫 עדכון מצב keep_away_mode
     if (typeof data.keep_away_mode === "boolean") {
       p.keep_away_mode = data.keep_away_mode;
       
-      // אם הופעל keep_away_mode, דחף שחקנים קרובים
       if (data.keep_away_mode && p.admin_level === 'admin') {
-        console.log(`🚫 ${p.username} enabled keep-away mode`);
-        pushAwayNearbyPlayers(p, p.current_area);
+        pushAwayNearbyPlayers(p, p.current_area, io);
       }
     }
 
@@ -479,7 +481,6 @@ io.on("connection", async (socket) => {
     if (!targetPlayer) return;
 
     console.log(`👢 Admin ${admin.username} kicked ${targetPlayer.username}`);
-
     io.to(targetSocketId).emit("kicked_by_admin");
     
     setTimeout(() => {
@@ -514,14 +515,12 @@ io.on("connection", async (socket) => {
     };
 
     io.to(p.current_area).emit("chat_message", payload);
-    console.log(`💬 [${p.current_area}] ${p.username}: ${msg}`);
   });
 
   // ========== ADMIN_SYSTEM_MESSAGE ==========
   socket.on("admin_system_message", (messageData = {}) => {
     const adminPlayer = players.get(socket.id);
     if (!adminPlayer) return;
-
     if (!["admin", "senior_touch"].includes(adminPlayer.admin_level)) return;
 
     const payload = {
@@ -535,10 +534,8 @@ io.on("connection", async (socket) => {
     const target = messageData.target_area || "all";
     if (target === "current") {
       io.to(adminPlayer.current_area).emit("chat_message", payload);
-      console.log(`📢 [SYSTEM current:${adminPlayer.current_area}] ${payload.message}`);
     } else {
       io.emit("chat_message", payload);
-      console.log(`📢 [SYSTEM all] ${payload.message}`);
     }
   });
 
@@ -551,12 +548,9 @@ io.on("connection", async (socket) => {
     if (!newArea || newArea === p.current_area) return;
 
     const oldArea = p.current_area;
-
     socket.leave(oldArea);
     p.current_area = newArea;
     socket.join(newArea);
-
-    console.log(`🚪 ${p.username} moved: ${oldArea} → ${newArea}`);
 
     socket.to(oldArea).emit("player_area_changed", { id: p.playerId, playerId: p.playerId });
 
@@ -568,44 +562,195 @@ io.on("connection", async (socket) => {
     socket.to(newArea).emit("player_joined", safePlayerView(p));
   });
 
-  // ========== TRADE ==========
+  // ========== TRADE REQUEST ==========
   socket.on("trade_request", (data = {}) => {
     const initiator = players.get(socket.id);
     if (!initiator) return;
 
-    const recvSid = getSocketIdByPlayerId(data?.receiver?.id);
+    const receiverId = data?.receiver?.id;
+    if (!receiverId) return;
+
+    const recvSid = getSocketIdByPlayerId(receiverId);
     if (!recvSid) return;
 
+    const receiver = players.get(recvSid);
+    if (!receiver) return;
+
     const tradeId = `trade_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    
     const trade = {
       id: tradeId,
       initiatorId: initiator.playerId,
-      receiverId: players.get(recvSid)?.playerId,
+      receiverId: receiver.playerId,
       initiator_offer: { items: [], coins: 0, gems: 0 },
       receiver_offer: { items: [], coins: 0, gems: 0 },
+      initiator_ready: false,
+      receiver_ready: false,
       status: "pending",
     };
+    
     activeTrades.set(tradeId, trade);
+    initiator.activeTradeId = tradeId;
+    receiver.activeTradeId = tradeId;
+
+    console.log(`🔄 Trade Request: ${initiator.username} → ${receiver.username} (${tradeId})`);
 
     io.to(recvSid).emit("trade_request_received", {
       trade_id: tradeId,
-      initiator: safePlayerView(initiator),
+      initiator: {
+        id: initiator.playerId,
+        username: initiator.username,
+        equipment: initiator.equipment,
+      },
     });
   });
 
-  socket.on("trade_accept", ({ trade_id } = {}) => {
-    const trade = activeTrades.get(trade_id);
+  // ========== TRADE ACCEPT ==========
+  socket.on("trade_accept", (data = {}) => {
+    const trade = activeTrades.get(data.trade_id);
     if (!trade) return;
+
     trade.status = "started";
-    broadcastTradeStatus(trade_id, "started");
+    console.log(`✅ Trade Accepted: ${data.trade_id}`);
+    broadcastTradeUpdate(data.trade_id, io);
   });
 
-  socket.on("trade_cancel", ({ trade_id, reason } = {}) => {
-    const trade = activeTrades.get(trade_id);
+  // ========== TRADE OFFER UPDATE ==========
+  socket.on("trade_offer_update", (data = {}) => {
+    const p = players.get(socket.id);
+    if (!p) return;
+
+    const trade = activeTrades.get(data.trade_id);
     if (!trade) return;
-    trade.status = "cancelled";
-    broadcastTradeStatus(trade_id, "cancelled", reason || "cancelled");
-    activeTrades.delete(trade_id);
+
+    if (trade.initiatorId === p.playerId) {
+      trade.initiator_offer = {
+        items: data.offer?.items || [],
+        coins: data.offer?.coins || 0,
+        gems: data.offer?.gems || 0,
+      };
+      trade.initiator_ready = false;
+      console.log(`🔄 ${p.username} updated offer: ${trade.initiator_offer.items.length} items, ${trade.initiator_offer.coins} coins`);
+    } else if (trade.receiverId === p.playerId) {
+      trade.receiver_offer = {
+        items: data.offer?.items || [],
+        coins: data.offer?.coins || 0,
+        gems: data.offer?.gems || 0,
+      };
+      trade.receiver_ready = false;
+      console.log(`🔄 ${p.username} updated offer: ${trade.receiver_offer.items.length} items, ${trade.receiver_offer.coins} coins`);
+    }
+
+    broadcastTradeUpdate(data.trade_id, io);
+  });
+
+  // ========== TRADE READY UPDATE ==========
+  socket.on("trade_ready_update", (data = {}) => {
+    const p = players.get(socket.id);
+    if (!p) return;
+
+    const trade = activeTrades.get(data.trade_id);
+    if (!trade) return;
+
+    if (trade.initiatorId === p.playerId) {
+      trade.initiator_ready = data.ready;
+      console.log(`${data.ready ? '✅' : '❌'} ${p.username} ready: ${data.ready}`);
+    } else if (trade.receiverId === p.playerId) {
+      trade.receiver_ready = data.ready;
+      console.log(`${data.ready ? '✅' : '❌'} ${p.username} ready: ${data.ready}`);
+    }
+
+    broadcastTradeUpdate(data.trade_id, io);
+
+    if (trade.initiator_ready && trade.receiver_ready) {
+      console.log(`🎉 Executing trade ${data.trade_id}...`);
+      
+      trade.status = "executing";
+      broadcastTradeUpdate(data.trade_id, io);
+
+      executeTradeOnBase44(trade).then(result => {
+        if (result.success) {
+          console.log(`✅ Trade Completed: ${data.trade_id}`);
+          
+          const initSid = getSocketIdByPlayerId(trade.initiatorId);
+          const recvSid = getSocketIdByPlayerId(trade.receiverId);
+          
+          if (initSid) {
+            const initPlayer = players.get(initSid);
+            if (initPlayer) initPlayer.activeTradeId = null;
+            io.to(initSid).emit("trade_completed_successfully", { trade_id: data.trade_id });
+          }
+          
+          if (recvSid) {
+            const recvPlayer = players.get(recvSid);
+            if (recvPlayer) recvPlayer.activeTradeId = null;
+            io.to(recvSid).emit("trade_completed_successfully", { trade_id: data.trade_id });
+          }
+          
+          activeTrades.delete(data.trade_id);
+        } else {
+          console.error(`❌ Trade Failed: ${data.trade_id} - ${result.error}`);
+          
+          trade.status = "failed";
+          const initSid = getSocketIdByPlayerId(trade.initiatorId);
+          const recvSid = getSocketIdByPlayerId(trade.receiverId);
+          
+          const errorPayload = {
+            id: data.trade_id,
+            status: "failed",
+            reason: result.error
+          };
+          
+          if (initSid) {
+            const initPlayer = players.get(initSid);
+            if (initPlayer) initPlayer.activeTradeId = null;
+            io.to(initSid).emit("trade_status_updated", errorPayload);
+          }
+          
+          if (recvSid) {
+            const recvPlayer = players.get(recvSid);
+            if (recvPlayer) recvPlayer.activeTradeId = null;
+            io.to(recvSid).emit("trade_status_updated", errorPayload);
+          }
+          
+          activeTrades.delete(data.trade_id);
+        }
+      });
+    }
+  });
+
+  // ========== TRADE CANCEL ==========
+  socket.on("trade_cancel", (data = {}) => {
+    const trade = activeTrades.get(data.trade_id);
+    if (!trade) return;
+
+    const p = players.get(socket.id);
+    console.log(`❌ Trade Cancelled: ${data.trade_id} by ${p?.username || 'unknown'}`);
+
+    const initSid = getSocketIdByPlayerId(trade.initiatorId);
+    const recvSid = getSocketIdByPlayerId(trade.receiverId);
+    
+    if (initSid) {
+      const initPlayer = players.get(initSid);
+      if (initPlayer) initPlayer.activeTradeId = null;
+      io.to(initSid).emit("trade_status_updated", {
+        id: data.trade_id,
+        status: "cancelled",
+        reason: data.reason || "cancelled"
+      });
+    }
+    
+    if (recvSid) {
+      const recvPlayer = players.get(recvSid);
+      if (recvPlayer) recvPlayer.activeTradeId = null;
+      io.to(recvSid).emit("trade_status_updated", {
+        id: data.trade_id,
+        status: "cancelled",
+        reason: data.reason || "cancelled"
+      });
+    }
+    
+    activeTrades.delete(data.trade_id);
   });
 
   // ========== DISCONNECT ==========
@@ -613,16 +758,28 @@ io.on("connection", async (socket) => {
     const p = players.get(socket.id);
     if (!p) return;
 
-    const jtiShort = p._tokenJTI ? p._tokenJTI.substring(0, 8) : 'N/A';
-    console.log(`🔴 Disconnect: ${p.username} (JTI: ${jtiShort}...) | reason=${reason}`);
+    console.log(`🔴 Disconnect: ${p.username} | ${reason}`);
     
     socket.to(p.current_area).emit("player_disconnected", p.playerId);
 
-    for (const [tid, t] of activeTrades.entries()) {
-      if (t.initiatorId === p.playerId || t.receiverId === p.playerId) {
-        t.status = "cancelled";
-        broadcastTradeStatus(tid, "cancelled", "participant_disconnected");
-        activeTrades.delete(tid);
+    if (p.activeTradeId) {
+      const trade = activeTrades.get(p.activeTradeId);
+      if (trade) {
+        const otherPlayerId = trade.initiatorId === p.playerId ? trade.receiverId : trade.initiatorId;
+        const otherSid = getSocketIdByPlayerId(otherPlayerId);
+        
+        if (otherSid) {
+          const otherPlayer = players.get(otherSid);
+          if (otherPlayer) otherPlayer.activeTradeId = null;
+          
+          io.to(otherSid).emit("trade_status_updated", {
+            id: p.activeTradeId,
+            status: "cancelled",
+            reason: "participant_disconnected"
+          });
+        }
+        
+        activeTrades.delete(p.activeTradeId);
       }
     }
 
@@ -652,7 +809,6 @@ setInterval(() => {
         player.position_y += (dy / distance) * moveSpeed;
       }
 
-      // 🚫 בדיקת keep-away בזמן תנועה
       if (player.admin_level === 'user') {
         const adminsInArea = Array.from(players.values()).filter(
           admin => admin.current_area === player.current_area && 
@@ -669,7 +825,6 @@ setInterval(() => {
           );
 
           if (distanceToAdmin < KEEP_AWAY_RADIUS) {
-            // עצור את התנועה ודחף החוצה
             const safePos = calculateSafePosition(
               player.position_x,
               player.position_y,
@@ -683,8 +838,6 @@ setInterval(() => {
             player.is_moving = false;
             player.destination_x = undefined;
             player.destination_y = undefined;
-
-            console.log(`🚫 Auto-pushed ${player.username} from admin ${admin.username}`);
           }
         }
       }
@@ -717,12 +870,11 @@ setInterval(() => {
 httpServer.listen(PORT, () => {
   console.log(`\n${"★".repeat(60)}`);
   console.log(`🚀 Touch World Server v${VERSION} - Port ${PORT}`);
-  console.log(`✅ ADMIN MODERATION: Ban, Kick, Mute enabled!`);
-  console.log(`👻 STEALTH MODE: Invisibility sync enabled!`);
-  console.log(`🚫 KEEP-AWAY MODE: ${KEEP_AWAY_RADIUS}px radius protection!`);
+  console.log(`✅ FIXED TRADE SYSTEM with player details!`);
+  console.log(`✅ ADMIN MODERATION enabled!`);
+  console.log(`👻 STEALTH MODE enabled!`);
+  console.log(`🚫 KEEP-AWAY MODE: ${KEEP_AWAY_RADIUS}px!`);
   console.log(`⚡ Move Speed: 10 pixels/tick`);
   console.log(`🎮 Game Loop: 20 FPS (50ms)`);
-  console.log(`🔐 JWT Rotation: ENABLED`);
-  console.log(`🌍 https://touchworld-realtime.onrender.com`);
   console.log(`${"★".repeat(60)}\n`);
 });
