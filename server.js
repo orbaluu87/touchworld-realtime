@@ -1,5 +1,5 @@
 // ============================================================================
-// Touch World - Socket Server v10.6.0 - FULL TRADE SYSTEM + KEEP AWAY
+// Touch World - Socket Server v10.7.0 - FIXED TRADE SYSTEM
 // ============================================================================
 
 const { createServer } = require("http");
@@ -48,14 +48,13 @@ if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   process.exit(1);
 }
 
-const VERSION = "10.6.0";
+const VERSION = "10.7.0";
 
 // ---------- State ----------
 const players = new Map();
 const activeTrades = new Map();
 const chatRateLimit = new Map();
 
-// 🚫 הגדרת רדיוס שמירת מרחק (פיקסלים)
 const KEEP_AWAY_RADIUS = 200;
 
 // ---------- Helpers ----------
@@ -149,11 +148,7 @@ async function verifyTokenWithBase44(token) {
     }
 
     const jtiShort = normalized.jti ? normalized.jti.substring(0, 8) : 'N/A';
-    const iatTime = normalized.iat ? new Date(normalized.iat * 1000).toLocaleTimeString('he-IL') : 'N/A';
-    
-    console.log(`✅ Token OK: ${normalized.username} (${normalized.playerId})`);
-    console.log(`   🔐 JTI: ${jtiShort}... | IAT: ${iatTime}`);
-    console.log(`   👻 Invisible: ${normalized.is_invisible} | 🚫 Keep-Away: ${normalized.keep_away_mode}`);
+    console.log(`✅ Token OK: ${normalized.username} (${normalized.playerId}) | JTI: ${jtiShort}...`);
     
     return normalized;
   } catch (err) {
@@ -162,12 +157,10 @@ async function verifyTokenWithBase44(token) {
   }
 }
 
-// 🚫 פונקציה לחישוב מרחק בין שתי נקודות
 function calculateDistance(x1, y1, x2, y2) {
   return Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2));
 }
 
-// 🚫 פונקציה לחישוב נקודה בטוחה מחוץ לרדיוס
 function calculateSafePosition(playerX, playerY, adminX, adminY, radius) {
   const dx = playerX - adminX;
   const dy = playerY - adminY;
@@ -186,7 +179,6 @@ function calculateSafePosition(playerX, playerY, adminX, adminY, radius) {
   return { x: safeX, y: safeY };
 }
 
-// 🚫 פונקציה לדחיפת שחקנים מסביב למנהל
 function pushAwayNearbyPlayers(adminPlayer, areaId, io) {
   const playersInArea = Array.from(players.values()).filter(
     p => p.current_area === areaId && p.playerId !== adminPlayer.playerId && p.admin_level === 'user'
@@ -237,7 +229,6 @@ function pushAwayNearbyPlayers(adminPlayer, areaId, io) {
   }
 }
 
-// 🔄 פונקציית Trade מלאה
 async function executeTradeOnBase44(trade) {
   try {
     const resp = await fetch(`${BASE44_API_URL}/functions/executeTrade`, {
@@ -282,20 +273,26 @@ function broadcastTradeUpdate(tradeId, io) {
       id: trade.initiatorId,
       username: initiatorPlayer?.username || "Unknown",
       ready: trade.initiator_ready || false,
+      equipment: initiatorPlayer?.equipment || {},
     },
     receiver: {
       id: trade.receiverId,
       username: receiverPlayer?.username || "Unknown",
       ready: trade.receiver_ready || false,
+      equipment: receiverPlayer?.equipment || {},
     },
     initiator_offer: trade.initiator_offer,
     receiver_offer: trade.receiver_offer,
   };
   
-  if (initSid) io.to(initSid).emit("trade_status_updated", payload);
-  if (recvSid) io.to(recvSid).emit("trade_status_updated", payload);
-  
-  console.log(`🔄 Trade Update: ${trade.status} | ${initiatorPlayer?.username} ↔️ ${receiverPlayer?.username}`);
+  if (initSid) {
+    console.log(`📤 Sending to initiator ${initiatorPlayer?.username}`);
+    io.to(initSid).emit("trade_status_updated", payload);
+  }
+  if (recvSid) {
+    console.log(`📤 Sending to receiver ${receiverPlayer?.username}`);
+    io.to(recvSid).emit("trade_status_updated", payload);
+  }
 }
 
 // ---------- Health ----------
@@ -393,7 +390,7 @@ io.on("connection", async (socket) => {
   socket.emit("current_players", areaPeers);
   socket.to(player.current_area).emit("player_joined", safePlayerView(player));
 
-  console.log(`🟢 Connected: ${player.username} (${player.current_area}) | Socket: ${socket.id.substring(0, 8)}...`);
+  console.log(`🟢 Connected: ${player.username} (${player.current_area})`);
 
   // ========== MOVE_TO ==========
   socket.on("move_to", (data = {}) => {
@@ -414,7 +411,6 @@ io.on("connection", async (socket) => {
         const distanceToAdmin = calculateDistance(x, y, admin.position_x, admin.position_y);
         
         if (distanceToAdmin < KEEP_AWAY_RADIUS) {
-          console.log(`🚫 Blocked ${p.username} from entering ${admin.username}'s keep-away zone`);
           socket.emit("keep_away_blocked", {
             message: `לא ניתן להתקרב למנהל ${admin.username}`,
             admin_username: admin.username
@@ -435,12 +431,6 @@ io.on("connection", async (socket) => {
     } else if (Math.abs(dy) > 0) {
       p.direction = dy > 0 ? "s" : "n";
     }
-
-    const t = now();
-    if (!p._lastMoveLogAt || t - p._lastMoveLogAt > 3000) {
-      console.log(`🚶 ${p.username} → (${Math.round(x)}, ${Math.round(y)})`);
-      p._lastMoveLogAt = t;
-    }
   });
 
   // ========== PLAYER_UPDATE ==========
@@ -457,14 +447,12 @@ io.on("connection", async (socket) => {
     
     if (typeof data.is_invisible === "boolean") {
       p.is_invisible = data.is_invisible;
-      console.log(`👻 ${p.username} invisibility: ${data.is_invisible}`);
     }
 
     if (typeof data.keep_away_mode === "boolean") {
       p.keep_away_mode = data.keep_away_mode;
       
       if (data.keep_away_mode && p.admin_level === 'admin') {
-        console.log(`🚫 ${p.username} enabled keep-away mode`);
         pushAwayNearbyPlayers(p, p.current_area, io);
       }
     }
@@ -527,7 +515,6 @@ io.on("connection", async (socket) => {
     };
 
     io.to(p.current_area).emit("chat_message", payload);
-    console.log(`💬 [${p.current_area}] ${p.username}: ${msg}`);
   });
 
   // ========== ADMIN_SYSTEM_MESSAGE ==========
@@ -547,10 +534,8 @@ io.on("connection", async (socket) => {
     const target = messageData.target_area || "all";
     if (target === "current") {
       io.to(adminPlayer.current_area).emit("chat_message", payload);
-      console.log(`📢 [SYSTEM current] ${payload.message}`);
     } else {
       io.emit("chat_message", payload);
-      console.log(`📢 [SYSTEM all] ${payload.message}`);
     }
   });
 
@@ -567,7 +552,6 @@ io.on("connection", async (socket) => {
     p.current_area = newArea;
     socket.join(newArea);
 
-    console.log(`🚪 ${p.username}: ${oldArea} → ${newArea}`);
     socket.to(oldArea).emit("player_area_changed", { id: p.playerId, playerId: p.playerId });
 
     const peers = Array.from(players.values())
@@ -613,7 +597,11 @@ io.on("connection", async (socket) => {
 
     io.to(recvSid).emit("trade_request_received", {
       trade_id: tradeId,
-      initiator: safePlayerView(initiator),
+      initiator: {
+        id: initiator.playerId,
+        username: initiator.username,
+        equipment: initiator.equipment,
+      },
     });
   });
 
@@ -635,23 +623,22 @@ io.on("connection", async (socket) => {
     const trade = activeTrades.get(data.trade_id);
     if (!trade) return;
 
-    // עדכן את ההצעה של השחקן הנכון
     if (trade.initiatorId === p.playerId) {
       trade.initiator_offer = {
         items: data.offer?.items || [],
         coins: data.offer?.coins || 0,
         gems: data.offer?.gems || 0,
       };
-      trade.initiator_ready = false; // איפוס אישור
-      console.log(`🔄 ${p.username} updated offer: ${trade.initiator_offer.items.length} items`);
+      trade.initiator_ready = false;
+      console.log(`🔄 ${p.username} updated offer: ${trade.initiator_offer.items.length} items, ${trade.initiator_offer.coins} coins`);
     } else if (trade.receiverId === p.playerId) {
       trade.receiver_offer = {
         items: data.offer?.items || [],
         coins: data.offer?.coins || 0,
         gems: data.offer?.gems || 0,
       };
-      trade.receiver_ready = false; // איפוס אישור
-      console.log(`🔄 ${p.username} updated offer: ${trade.receiver_offer.items.length} items`);
+      trade.receiver_ready = false;
+      console.log(`🔄 ${p.username} updated offer: ${trade.receiver_offer.items.length} items, ${trade.receiver_offer.coins} coins`);
     }
 
     broadcastTradeUpdate(data.trade_id, io);
@@ -665,7 +652,6 @@ io.on("connection", async (socket) => {
     const trade = activeTrades.get(data.trade_id);
     if (!trade) return;
 
-    // עדכן סטטוס ready
     if (trade.initiatorId === p.playerId) {
       trade.initiator_ready = data.ready;
       console.log(`${data.ready ? '✅' : '❌'} ${p.username} ready: ${data.ready}`);
@@ -676,7 +662,6 @@ io.on("connection", async (socket) => {
 
     broadcastTradeUpdate(data.trade_id, io);
 
-    // אם שני הצדדים מוכנים - בצע החלפה
     if (trade.initiator_ready && trade.receiver_ready) {
       console.log(`🎉 Executing trade ${data.trade_id}...`);
       
@@ -711,7 +696,7 @@ io.on("connection", async (socket) => {
           const recvSid = getSocketIdByPlayerId(trade.receiverId);
           
           const errorPayload = {
-            tradeId: data.trade_id,
+            id: data.trade_id,
             status: "failed",
             reason: result.error
           };
@@ -749,7 +734,7 @@ io.on("connection", async (socket) => {
       const initPlayer = players.get(initSid);
       if (initPlayer) initPlayer.activeTradeId = null;
       io.to(initSid).emit("trade_status_updated", {
-        tradeId: data.trade_id,
+        id: data.trade_id,
         status: "cancelled",
         reason: data.reason || "cancelled"
       });
@@ -759,7 +744,7 @@ io.on("connection", async (socket) => {
       const recvPlayer = players.get(recvSid);
       if (recvPlayer) recvPlayer.activeTradeId = null;
       io.to(recvSid).emit("trade_status_updated", {
-        tradeId: data.trade_id,
+        id: data.trade_id,
         status: "cancelled",
         reason: data.reason || "cancelled"
       });
@@ -773,12 +758,10 @@ io.on("connection", async (socket) => {
     const p = players.get(socket.id);
     if (!p) return;
 
-    const jtiShort = p._tokenJTI ? p._tokenJTI.substring(0, 8) : 'N/A';
-    console.log(`🔴 Disconnect: ${p.username} (JTI: ${jtiShort}...) | ${reason}`);
+    console.log(`🔴 Disconnect: ${p.username} | ${reason}`);
     
     socket.to(p.current_area).emit("player_disconnected", p.playerId);
 
-    // בטל כל החלפות פעילות
     if (p.activeTradeId) {
       const trade = activeTrades.get(p.activeTradeId);
       if (trade) {
@@ -790,7 +773,7 @@ io.on("connection", async (socket) => {
           if (otherPlayer) otherPlayer.activeTradeId = null;
           
           io.to(otherSid).emit("trade_status_updated", {
-            tradeId: p.activeTradeId,
+            id: p.activeTradeId,
             status: "cancelled",
             reason: "participant_disconnected"
           });
@@ -826,7 +809,6 @@ setInterval(() => {
         player.position_y += (dy / distance) * moveSpeed;
       }
 
-      // בדיקת keep-away
       if (player.admin_level === 'user') {
         const adminsInArea = Array.from(players.values()).filter(
           admin => admin.current_area === player.current_area && 
@@ -888,12 +870,11 @@ setInterval(() => {
 httpServer.listen(PORT, () => {
   console.log(`\n${"★".repeat(60)}`);
   console.log(`🚀 Touch World Server v${VERSION} - Port ${PORT}`);
-  console.log(`✅ FULL TRADE SYSTEM with offer updates!`);
-  console.log(`✅ ADMIN MODERATION: Kick, Mute enabled!`);
-  console.log(`👻 STEALTH MODE: Invisibility enabled!`);
-  console.log(`🚫 KEEP-AWAY MODE: ${KEEP_AWAY_RADIUS}px radius!`);
+  console.log(`✅ FIXED TRADE SYSTEM with player details!`);
+  console.log(`✅ ADMIN MODERATION enabled!`);
+  console.log(`👻 STEALTH MODE enabled!`);
+  console.log(`🚫 KEEP-AWAY MODE: ${KEEP_AWAY_RADIUS}px!`);
   console.log(`⚡ Move Speed: 10 pixels/tick`);
   console.log(`🎮 Game Loop: 20 FPS (50ms)`);
-  console.log(`🔐 JWT Rotation: ENABLED`);
   console.log(`${"★".repeat(60)}\n`);
 });
