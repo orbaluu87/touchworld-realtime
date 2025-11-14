@@ -1,5 +1,5 @@
 // ============================================================================
-// Touch World - Socket Server v10.7.0 - FIXED TRADE SYSTEM
+// Touch World - Socket Server v10.8.0 - TRADE WITH EQUIPMENT REMOVAL
 // ============================================================================
 
 const { createServer } = require("http");
@@ -48,7 +48,7 @@ if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   process.exit(1);
 }
 
-const VERSION = "10.7.0";
+const VERSION = "10.8.0";
 
 // ---------- State ----------
 const players = new Map();
@@ -226,6 +226,143 @@ function pushAwayNearbyPlayers(adminPlayer, areaId, io) {
 
   if (movedPlayers.length > 0) {
     io.to(areaId).emit("players_moved", movedPlayers);
+  }
+}
+
+// פונקציה חדשה: מזהה אילו פריטים מההצעה לבושים על השחקן
+async function getEquippedItemsFromOffer(playerId, offerItems) {
+  if (!offerItems || offerItems.length === 0) return [];
+
+  try {
+    // שליפת פרטי הפריטים מהדאטאבייס
+    const itemsResponse = await fetch(`${BASE44_API_URL}/entities/Item/list`, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${BASE44_SERVICE_KEY}`,
+      },
+    });
+
+    if (!itemsResponse.ok) return [];
+    
+    const allItems = await itemsResponse.json();
+    const itemsMap = new Map(allItems.map(item => [item.id, item]));
+
+    // מציאת השחקן
+    const socketId = getSocketIdByPlayerId(playerId);
+    if (!socketId) return [];
+    
+    const player = players.get(socketId);
+    if (!player) return [];
+
+    const equippedItems = [];
+
+    // בדיקה לכל פריט בהצעה
+    for (const inventoryItemId of offerItems) {
+      // שליפת פרטי הפריט מה-inventory
+      const invResponse = await fetch(`${BASE44_API_URL}/entities/PlayerInventory/${inventoryItemId}`, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${BASE44_SERVICE_KEY}`,
+        },
+      });
+
+      if (!invResponse.ok) continue;
+      
+      const invItem = await invResponse.json();
+      const itemDetails = itemsMap.get(invItem.item_id);
+      
+      if (!itemDetails) continue;
+
+      // בדיקה אם הפריט לבוש על השחקן
+      const itemCode = itemDetails.item_code;
+      const itemType = itemDetails.type;
+
+      let isEquipped = false;
+      let equipmentSlot = null;
+
+      switch (itemType) {
+        case 'hair':
+          if (player.equipment.equipped_hair === itemCode) {
+            isEquipped = true;
+            equipmentSlot = 'equipped_hair';
+          }
+          break;
+        case 'top':
+          if (player.equipment.equipped_top === itemCode) {
+            isEquipped = true;
+            equipmentSlot = 'equipped_top';
+          }
+          break;
+        case 'pants':
+          if (player.equipment.equipped_pants === itemCode) {
+            isEquipped = true;
+            equipmentSlot = 'equipped_pants';
+          }
+          break;
+        case 'hat':
+          if (player.equipment.equipped_hat === itemCode) {
+            isEquipped = true;
+            equipmentSlot = 'equipped_hat';
+          }
+          break;
+        case 'necklace':
+          if (player.equipment.equipped_necklace === itemCode) {
+            isEquipped = true;
+            equipmentSlot = 'equipped_necklace';
+          }
+          break;
+        case 'halo':
+          if (player.equipment.equipped_halo === itemCode) {
+            isEquipped = true;
+            equipmentSlot = 'equipped_halo';
+          }
+          break;
+        case 'shoes':
+          if (player.equipment.equipped_shoes === itemCode) {
+            isEquipped = true;
+            equipmentSlot = 'equipped_shoes';
+          }
+          break;
+        case 'accessory':
+          if (player.equipment.equipped_accessory === itemCode) {
+            isEquipped = true;
+            equipmentSlot = 'equipped_accessory';
+          }
+          break;
+      }
+
+      if (isEquipped) {
+        equippedItems.push({
+          inventoryItemId,
+          itemCode,
+          itemType,
+          equipmentSlot,
+        });
+      }
+    }
+
+    return equippedItems;
+  } catch (error) {
+    console.error("Error checking equipped items:", error);
+    return [];
+  }
+}
+
+// פונקציה חדשה: מסירה פריטים לבושים מהשחקן
+function removeEquippedItems(playerId, equippedItems) {
+  const socketId = getSocketIdByPlayerId(playerId);
+  if (!socketId) return;
+
+  const player = players.get(socketId);
+  if (!player) return;
+
+  for (const item of equippedItems) {
+    if (item.equipmentSlot && player.equipment[item.equipmentSlot]) {
+      console.log(`🔧 Removing ${item.equipmentSlot} (${item.itemCode}) from ${player.username}`);
+      player.equipment[item.equipmentSlot] = null;
+    }
   }
 }
 
@@ -645,7 +782,7 @@ io.on("connection", async (socket) => {
   });
 
   // ========== TRADE READY UPDATE ==========
-  socket.on("trade_ready_update", (data = {}) => {
+  socket.on("trade_ready_update", async (data = {}) => {
     const p = players.get(socket.id);
     if (!p) return;
 
@@ -668,6 +805,15 @@ io.on("connection", async (socket) => {
       trade.status = "executing";
       broadcastTradeUpdate(data.trade_id, io);
 
+      // בדיקה אילו פריטים לבושים
+      const [initiatorEquipped, receiverEquipped] = await Promise.all([
+        getEquippedItemsFromOffer(trade.initiatorId, trade.initiator_offer.items),
+        getEquippedItemsFromOffer(trade.receiverId, trade.receiver_offer.items),
+      ]);
+
+      console.log(`👕 Initiator equipped items:`, initiatorEquipped.length);
+      console.log(`👕 Receiver equipped items:`, receiverEquipped.length);
+
       executeTradeOnBase44(trade).then(result => {
         if (result.success) {
           console.log(`✅ Trade Completed: ${data.trade_id}`);
@@ -675,16 +821,60 @@ io.on("connection", async (socket) => {
           const initSid = getSocketIdByPlayerId(trade.initiatorId);
           const recvSid = getSocketIdByPlayerId(trade.receiverId);
           
+          // הסרת פריטים לבושים משני השחקנים
+          removeEquippedItems(trade.initiatorId, initiatorEquipped);
+          removeEquippedItems(trade.receiverId, receiverEquipped);
+
+          const initiatorPlayer = players.get(initSid);
+          const receiverPlayer = players.get(recvSid);
+          
           if (initSid) {
-            const initPlayer = players.get(initSid);
-            if (initPlayer) initPlayer.activeTradeId = null;
+            if (initiatorPlayer) {
+              initiatorPlayer.activeTradeId = null;
+              
+              // שליחת עדכון על הפריטים שהוסרו
+              if (initiatorEquipped.length > 0) {
+                io.to(initSid).emit("items_unequipped", {
+                  items: initiatorEquipped.map(i => i.equipmentSlot),
+                  equipment: initiatorPlayer.equipment,
+                });
+              }
+            }
             io.to(initSid).emit("trade_completed_successfully", { trade_id: data.trade_id });
           }
           
           if (recvSid) {
-            const recvPlayer = players.get(recvSid);
-            if (recvPlayer) recvPlayer.activeTradeId = null;
+            if (receiverPlayer) {
+              receiverPlayer.activeTradeId = null;
+              
+              // שליחת עדכון על הפריטים שהוסרו
+              if (receiverEquipped.length > 0) {
+                io.to(recvSid).emit("items_unequipped", {
+                  items: receiverEquipped.map(i => i.equipmentSlot),
+                  equipment: receiverPlayer.equipment,
+                });
+              }
+            }
             io.to(recvSid).emit("trade_completed_successfully", { trade_id: data.trade_id });
+          }
+
+          // שידור לכל השחקנים באזור על העדכון
+          if (initiatorPlayer && initiatorEquipped.length > 0) {
+            io.to(initiatorPlayer.current_area).emit("player_update", {
+              id: initiatorPlayer.playerId,
+              playerId: initiatorPlayer.playerId,
+              socketId: initSid,
+              equipment: initiatorPlayer.equipment,
+            });
+          }
+
+          if (receiverPlayer && receiverEquipped.length > 0) {
+            io.to(receiverPlayer.current_area).emit("player_update", {
+              id: receiverPlayer.playerId,
+              playerId: receiverPlayer.playerId,
+              socketId: recvSid,
+              equipment: receiverPlayer.equipment,
+            });
           }
           
           activeTrades.delete(data.trade_id);
@@ -870,7 +1060,7 @@ setInterval(() => {
 httpServer.listen(PORT, () => {
   console.log(`\n${"★".repeat(60)}`);
   console.log(`🚀 Touch World Server v${VERSION} - Port ${PORT}`);
-  console.log(`✅ FIXED TRADE SYSTEM with player details!`);
+  console.log(`✅ TRADE SYSTEM with EQUIPMENT REMOVAL!`);
   console.log(`✅ ADMIN MODERATION enabled!`);
   console.log(`👻 STEALTH MODE enabled!`);
   console.log(`🚫 KEEP-AWAY MODE: ${KEEP_AWAY_RADIUS}px!`);
