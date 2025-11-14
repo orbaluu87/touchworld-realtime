@@ -1,5 +1,5 @@
 // ============================================================================
-// Touch World - Socket Server v10.8.0 - TRADE WITH EQUIPMENT REMOVAL
+// Touch World - Socket Server v10.9.0 - FIXED EQUIPMENT REMOVAL IN DB
 // ============================================================================
 
 const { createServer } = require("http");
@@ -48,7 +48,7 @@ if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   process.exit(1);
 }
 
-const VERSION = "10.8.0";
+const VERSION = "10.9.0";
 
 // ---------- State ----------
 const players = new Map();
@@ -350,18 +350,38 @@ async function getEquippedItemsFromOffer(playerId, offerItems) {
   }
 }
 
-// פונקציה חדשה: מסירה פריטים לבושים מהשחקן
-function removeEquippedItems(playerId, equippedItems) {
+// פונקציה חדשה: מסירה פריטים לבושים מהשחקן בזיכרון ובדאטאבייס
+async function removeEquippedItems(playerId, equippedItems) {
   const socketId = getSocketIdByPlayerId(playerId);
   if (!socketId) return;
 
   const player = players.get(socketId);
   if (!player) return;
 
+  const updates = {};
+  
   for (const item of equippedItems) {
     if (item.equipmentSlot && player.equipment[item.equipmentSlot]) {
       console.log(`🔧 Removing ${item.equipmentSlot} (${item.itemCode}) from ${player.username}`);
       player.equipment[item.equipmentSlot] = null;
+      updates[item.equipmentSlot] = null;
+    }
+  }
+
+  // 🔥 עדכון הדאטאבייס - חשוב מאוד!
+  if (Object.keys(updates).length > 0) {
+    try {
+      await fetch(`${BASE44_API_URL}/entities/Player/${playerId}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${BASE44_SERVICE_KEY}`,
+        },
+        body: JSON.stringify(updates),
+      });
+      console.log(`💾 Updated DB for ${player.username}:`, updates);
+    } catch (error) {
+      console.error(`❌ Failed to update DB for ${player.username}:`, error);
     }
   }
 }
@@ -814,16 +834,18 @@ io.on("connection", async (socket) => {
       console.log(`👕 Initiator equipped items:`, initiatorEquipped.length);
       console.log(`👕 Receiver equipped items:`, receiverEquipped.length);
 
-      executeTradeOnBase44(trade).then(result => {
+      executeTradeOnBase44(trade).then(async (result) => {
         if (result.success) {
           console.log(`✅ Trade Completed: ${data.trade_id}`);
           
           const initSid = getSocketIdByPlayerId(trade.initiatorId);
           const recvSid = getSocketIdByPlayerId(trade.receiverId);
           
-          // הסרת פריטים לבושים משני השחקנים
-          removeEquippedItems(trade.initiatorId, initiatorEquipped);
-          removeEquippedItems(trade.receiverId, receiverEquipped);
+          // 🔥 הסרת פריטים לבושים משני השחקנים - גם בזיכרון וגם בDB
+          await Promise.all([
+            removeEquippedItems(trade.initiatorId, initiatorEquipped),
+            removeEquippedItems(trade.receiverId, receiverEquipped),
+          ]);
 
           const initiatorPlayer = players.get(initSid);
           const receiverPlayer = players.get(recvSid);
@@ -858,7 +880,7 @@ io.on("connection", async (socket) => {
             io.to(recvSid).emit("trade_completed_successfully", { trade_id: data.trade_id });
           }
 
-          // שידור לכל השחקנים באזור על העדכון
+          // 🔥 שידור לכל השחקנים באזור על העדכון
           if (initiatorPlayer && initiatorEquipped.length > 0) {
             io.to(initiatorPlayer.current_area).emit("player_update", {
               id: initiatorPlayer.playerId,
@@ -1060,7 +1082,7 @@ setInterval(() => {
 httpServer.listen(PORT, () => {
   console.log(`\n${"★".repeat(60)}`);
   console.log(`🚀 Touch World Server v${VERSION} - Port ${PORT}`);
-  console.log(`✅ TRADE SYSTEM with EQUIPMENT REMOVAL!`);
+  console.log(`✅ TRADE SYSTEM with EQUIPMENT REMOVAL + DB UPDATE!`);
   console.log(`✅ ADMIN MODERATION enabled!`);
   console.log(`👻 STEALTH MODE enabled!`);
   console.log(`🚫 KEEP-AWAY MODE: ${KEEP_AWAY_RADIUS}px!`);
