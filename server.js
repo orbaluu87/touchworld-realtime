@@ -301,6 +301,12 @@ async function getEquippedItemsFromOffer(playerId, offerItems) {
             equipmentSlot = 'equipped_pants';
           }
           break;
+        case 'gloves':
+          if (player.equipment.equipped_gloves === itemCode) {
+            isEquipped = true;
+            equipmentSlot = 'equipped_gloves';
+          }
+          break;
         case 'hat':
           if (player.equipment.equipped_hat === itemCode) {
             isEquipped = true;
