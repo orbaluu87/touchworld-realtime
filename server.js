@@ -1,5 +1,5 @@
 // ============================================================================
-// Touch World - Socket Server v10.9.0 - FIXED EQUIPMENT REMOVAL IN DB
+// Touch World - Socket Server v11.0.0 - PLAYER-ONLY SYSTEM
 // ============================================================================
 
 const { createServer } = require("http");
@@ -33,7 +33,7 @@ const httpServer = createServer(app);
 const PORT = process.env.PORT || 10000;
 
 // ---------- Env / Security ----------
-const JWT_SECRET = process.env.WSS_JWT_SECRET || process.env.JWT_SECRET;
+const JWT_SECRET = process.env.JWT_SECRET;
 const VERIFY_TOKEN_URL =
   process.env.VERIFY_TOKEN_URL ||
   "https://base44.app/api/apps/68e269394d8f2fa24e82cd71/functions/verifyWebSocketToken";
@@ -48,7 +48,7 @@ if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   process.exit(1);
 }
 
-const VERSION = "10.9.0";
+const VERSION = "11.0.0";
 
 // ---------- State ----------
 const players = new Map();
@@ -88,36 +88,37 @@ function getSocketIdByPlayerId(playerId) {
   return null;
 }
 
-function normalizeUserShape(userAny) {
-  const pd = userAny?.player_data || userAny;
-  const playerId = pd?.id ?? pd?.playerId ?? pd?.userId ?? userAny?.id ?? userAny?.playerId;
+function normalizePlayerShape(playerData) {
+  const playerId = playerData?.id ?? playerData?.playerId;
 
   return {
     playerId,
-    userId: pd?.userId ?? playerId,
-    username: pd?.username ?? "Guest",
-    current_area: pd?.current_area ?? "area1",
-    admin_level: pd?.admin_level ?? "user",
-    jti: userAny?.jti || null,
-    iat: userAny?.iat || null,
+    username: playerData?.username ?? "Guest",
+    display_name: playerData?.display_name,
+    current_area: playerData?.current_area ?? "area1",
+    admin_level: playerData?.admin_level ?? "user",
     equipment: {
-      skin_code: pd?.skin_code,
-      equipped_hair: pd?.equipped_hair,
-      equipped_top: pd?.equipped_top,
-      equipped_pants: pd?.equipped_pants,
-      equipped_hat: pd?.equipped_hat,
-      equipped_necklace: pd?.equipped_necklace,
-      equipped_halo: pd?.equipped_halo,
-      equipped_shoes: pd?.equipped_shoes,
-      equipped_gloves: pd?.equipped_gloves,
-      equipped_accessory: pd?.equipped_accessory,
-      ...(pd?.equipment || {}),
+      skin_code: playerData?.skin_code,
+      equipped_hair: playerData?.equipped_hair,
+      equipped_top: playerData?.equipped_top,
+      equipped_pants: playerData?.equipped_pants,
+      equipped_hat: playerData?.equipped_hat,
+      equipped_necklace: playerData?.equipped_necklace,
+      equipped_halo: playerData?.equipped_halo,
+      equipped_shoes: playerData?.equipped_shoes,
+      equipped_gloves: playerData?.equipped_gloves,
+      equipped_accessory: playerData?.equipped_accessory,
+      ...(playerData?.equipment || {}),
     },
-    position_x: Number.isFinite(pd?.position_x) ? pd.position_x : 600,
-    position_y: Number.isFinite(pd?.position_y) ? pd.position_y : 400,
-    direction: pd?.direction ?? "front",
-    keep_away_mode: !!pd?.keep_away_mode,
-    is_invisible: !!pd?.is_invisible,
+    position_x: Number.isFinite(playerData?.position_x) ? playerData.position_x : 600,
+    position_y: Number.isFinite(playerData?.position_y) ? playerData.position_y : 400,
+    direction: playerData?.direction ?? "front",
+    keep_away_mode: !!playerData?.keep_away_mode,
+    is_invisible: !!playerData?.is_invisible,
+    level: playerData?.level || 1,
+    xp: playerData?.xp || 0,
+    coins: playerData?.coins || 500,
+    gems: playerData?.gems || 10,
   };
 }
 
@@ -138,17 +139,16 @@ async function verifyTokenWithBase44(token) {
     }
 
     const result = await response.json();
-    if (!result?.success) {
+    if (!result?.success || !result?.player) {
       throw new Error(result?.error || "verifyWebSocketToken failed");
     }
 
-    const normalized = normalizeUserShape(result.user);
+    const normalized = normalizePlayerShape(result.player);
     if (!normalized.playerId) {
       throw new Error("normalized playerId missing");
     }
 
-    const jtiShort = normalized.jti ? normalized.jti.substring(0, 8) : 'N/A';
-    console.log(`✅ Token OK: ${normalized.username} (${normalized.playerId}) | JTI: ${jtiShort}...`);
+    console.log(`✅ Token OK: ${normalized.username} (${normalized.playerId})`);
     
     return normalized;
   } catch (err) {
@@ -229,12 +229,10 @@ function pushAwayNearbyPlayers(adminPlayer, areaId, io) {
   }
 }
 
-// פונקציה חדשה: מזהה אילו פריטים מההצעה לבושים על השחקן
 async function getEquippedItemsFromOffer(playerId, offerItems) {
   if (!offerItems || offerItems.length === 0) return [];
 
   try {
-    // שליפת פרטי הפריטים מהדאטאבייס
     const itemsResponse = await fetch(`${BASE44_API_URL}/entities/Item/list`, {
       method: "GET",
       headers: {
@@ -248,7 +246,6 @@ async function getEquippedItemsFromOffer(playerId, offerItems) {
     const allItems = await itemsResponse.json();
     const itemsMap = new Map(allItems.map(item => [item.id, item]));
 
-    // מציאת השחקן
     const socketId = getSocketIdByPlayerId(playerId);
     if (!socketId) return [];
     
@@ -257,9 +254,7 @@ async function getEquippedItemsFromOffer(playerId, offerItems) {
 
     const equippedItems = [];
 
-    // בדיקה לכל פריט בהצעה
     for (const inventoryItemId of offerItems) {
-      // שליפת פרטי הפריט מה-inventory
       const invResponse = await fetch(`${BASE44_API_URL}/entities/PlayerInventory/${inventoryItemId}`, {
         method: "GET",
         headers: {
@@ -275,7 +270,6 @@ async function getEquippedItemsFromOffer(playerId, offerItems) {
       
       if (!itemDetails) continue;
 
-      // בדיקה אם הפריט לבוש על השחקן
       const itemCode = itemDetails.item_code;
       const itemType = itemDetails.type;
 
@@ -356,7 +350,6 @@ async function getEquippedItemsFromOffer(playerId, offerItems) {
   }
 }
 
-// פונקציה חדשה: מסירה פריטים לבושים מהשחקן בזיכרון ובדאטאבייס
 async function removeEquippedItems(playerId, equippedItems) {
   const socketId = getSocketIdByPlayerId(playerId);
   if (!socketId) return;
@@ -374,7 +367,6 @@ async function removeEquippedItems(playerId, equippedItems) {
     }
   }
 
-  // 🔥 עדכון הדאטאבייס - חשוב מאוד!
   if (Object.keys(updates).length > 0) {
     try {
       await fetch(`${BASE44_API_URL}/entities/Player/${playerId}`, {
@@ -501,8 +493,8 @@ io.on("connection", async (socket) => {
     return;
   }
 
-  const user = await verifyTokenWithBase44(token);
-  if (!user) {
+  const playerData = await verifyTokenWithBase44(token);
+  if (!playerData) {
     socket.emit("disconnect_reason", "invalid_token");
     socket.disconnect(true);
     return;
@@ -510,7 +502,7 @@ io.on("connection", async (socket) => {
 
   // Kick duplicate
   for (const [sid, p] of players.entries()) {
-    if (p.playerId === user.playerId && sid !== socket.id) {
+    if (p.playerId === playerData.playerId && sid !== socket.id) {
       console.log(`⚠️ Kicking duplicate session for ${p.username}`);
       io.to(sid).emit("disconnect_reason", "logged_in_elsewhere");
       io.sockets.sockets.get(sid)?.disconnect(true);
@@ -521,25 +513,23 @@ io.on("connection", async (socket) => {
   // Register player
   const player = {
     socketId: socket.id,
-    playerId: user.playerId,
-    userId: user.userId,
-    username: user.username,
-    admin_level: user.admin_level,
-    current_area: user.current_area || "area1",
-    equipment: user.equipment || {},
-    position_x: user.position_x ?? 600,
-    position_y: user.position_y ?? 400,
-    direction: user.direction || "front",
+    playerId: playerData.playerId,
+    username: playerData.username,
+    display_name: playerData.display_name,
+    admin_level: playerData.admin_level,
+    current_area: playerData.current_area || "area1",
+    equipment: playerData.equipment || {},
+    position_x: playerData.position_x ?? 600,
+    position_y: playerData.position_y ?? 400,
+    direction: playerData.direction || "front",
     is_moving: false,
     animation_frame: "idle",
     destination_x: undefined,
     destination_y: undefined,
-    is_invisible: user.is_invisible ?? false,
-    keep_away_mode: user.keep_away_mode ?? false,
+    is_invisible: playerData.is_invisible ?? false,
+    keep_away_mode: playerData.keep_away_mode ?? false,
     activeTradeId: null,
     _lastMoveLogAt: 0,
-    _tokenJTI: user.jti,
-    _tokenIAT: user.iat,
   };
 
   players.set(socket.id, player);
@@ -831,7 +821,6 @@ io.on("connection", async (socket) => {
       trade.status = "executing";
       broadcastTradeUpdate(data.trade_id, io);
 
-      // בדיקה אילו פריטים לבושים
       const [initiatorEquipped, receiverEquipped] = await Promise.all([
         getEquippedItemsFromOffer(trade.initiatorId, trade.initiator_offer.items),
         getEquippedItemsFromOffer(trade.receiverId, trade.receiver_offer.items),
@@ -847,7 +836,6 @@ io.on("connection", async (socket) => {
           const initSid = getSocketIdByPlayerId(trade.initiatorId);
           const recvSid = getSocketIdByPlayerId(trade.receiverId);
           
-          // 🔥 הסרת פריטים לבושים משני השחקנים - גם בזיכרון וגם בDB
           await Promise.all([
             removeEquippedItems(trade.initiatorId, initiatorEquipped),
             removeEquippedItems(trade.receiverId, receiverEquipped),
@@ -860,7 +848,6 @@ io.on("connection", async (socket) => {
             if (initiatorPlayer) {
               initiatorPlayer.activeTradeId = null;
               
-              // שליחת עדכון על הפריטים שהוסרו
               if (initiatorEquipped.length > 0) {
                 io.to(initSid).emit("items_unequipped", {
                   items: initiatorEquipped.map(i => i.equipmentSlot),
@@ -875,7 +862,6 @@ io.on("connection", async (socket) => {
             if (receiverPlayer) {
               receiverPlayer.activeTradeId = null;
               
-              // שליחת עדכון על הפריטים שהוסרו
               if (receiverEquipped.length > 0) {
                 io.to(recvSid).emit("items_unequipped", {
                   items: receiverEquipped.map(i => i.equipmentSlot),
@@ -886,7 +872,6 @@ io.on("connection", async (socket) => {
             io.to(recvSid).emit("trade_completed_successfully", { trade_id: data.trade_id });
           }
 
-          // 🔥 שידור לכל השחקנים באזור על העדכון
           if (initiatorPlayer && initiatorEquipped.length > 0) {
             io.to(initiatorPlayer.current_area).emit("player_update", {
               id: initiatorPlayer.playerId,
@@ -1088,6 +1073,8 @@ setInterval(() => {
 httpServer.listen(PORT, () => {
   console.log(`\n${"★".repeat(60)}`);
   console.log(`🚀 Touch World Server v${VERSION} - Port ${PORT}`);
+  console.log(`✅ PLAYER-ONLY SYSTEM - NO BASE44 USERS!`);
+  console.log(`✅ CUSTOM JWT AUTHENTICATION!`);
   console.log(`✅ TRADE SYSTEM with EQUIPMENT REMOVAL + DB UPDATE!`);
   console.log(`✅ ADMIN MODERATION enabled!`);
   console.log(`👻 STEALTH MODE enabled!`);
