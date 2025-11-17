@@ -1,5 +1,6 @@
+
 // ============================================================================
-// Touch World - Socket Server v11.0.0 - PLAYER-ONLY SYSTEM
+// Touch World - Socket Server v11.1.0 - PLAYER-ONLY SYSTEM + CHAT BUBBLE SYNC
 // ============================================================================
 
 const { createServer } = require("http");
@@ -48,7 +49,7 @@ if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   process.exit(1);
 }
 
-const VERSION = "11.0.0";
+const VERSION = "11.1.0";
 
 // ---------- State ----------
 const players = new Map();
@@ -473,6 +474,20 @@ app.get("/health", (req, res) => {
   });
 });
 
+// ---------- Broadcast Config Endpoint ----------
+app.post("/broadcast-config", (req, res) => {
+  const key = req.headers["x-health-key"];
+  if (key !== HEALTH_KEY) return res.status(403).json({ ok: false });
+  
+  const { type } = req.body;
+  console.log(`⚙️ Broadcasting config update: ${type}`);
+  
+  // שידור לכל המשחקים המחוברים
+  io.emit("config_refresh_required", { type });
+  
+  res.json({ ok: true, broadcasted: true });
+});
+
 // ---------- Socket.IO ----------
 const io = new Server(httpServer, {
   cors: {
@@ -670,6 +685,18 @@ io.on("connection", async (socket) => {
     io.to(p.current_area).emit("chat_message", payload);
   });
 
+  // ========== ADMIN_CONFIG_UPDATED ==========
+  socket.on("admin_config_updated", (data = {}) => {
+    const adminPlayer = players.get(socket.id);
+    if (!adminPlayer) return;
+    if (!["admin", "senior_touch"].includes(adminPlayer.admin_level)) return;
+
+    console.log(`⚙️ Admin ${adminPlayer.username} updated config: ${data.type}`);
+    
+    // ✅ שידור לכל המשחקים המחוברים לרענן את הקונפיג
+    io.emit("config_refresh_required", { type: data.type });
+  });
+
   // ========== ADMIN_SYSTEM_MESSAGE ==========
   socket.on("admin_system_message", (messageData = {}) => {
     const adminPlayer = players.get(socket.id);
@@ -693,7 +720,7 @@ io.on("connection", async (socket) => {
   });
 
   // ========== CHANGE_AREA ==========
-  socket.on("change_area", (data = {}) => {
+  socket.on("change_area", async (data = {}) => {
     const p = players.get(socket.id);
     if (!p) return;
 
@@ -704,6 +731,23 @@ io.on("connection", async (socket) => {
     socket.leave(oldArea);
     p.current_area = newArea;
     socket.join(newArea);
+
+    console.log(`🔄 ${p.username} changed area: ${oldArea} → ${newArea}`);
+
+    // ✅ עדכון ב-Player entity
+    try {
+      await fetch(`${BASE44_API_URL}/entities/Player/${p.playerId}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${BASE44_SERVICE_KEY}`,
+        },
+        body: JSON.stringify({ current_area: newArea }),
+      });
+      console.log(`💾 Updated Player area in DB: ${p.username} → ${newArea}`);
+    } catch (error) {
+      console.error(`❌ Failed to update Player area in DB:`, error);
+    }
 
     socket.to(oldArea).emit("player_area_changed", { id: p.playerId, playerId: p.playerId });
 
@@ -1079,6 +1123,7 @@ httpServer.listen(PORT, () => {
   console.log(`✅ ADMIN MODERATION enabled!`);
   console.log(`👻 STEALTH MODE enabled!`);
   console.log(`🚫 KEEP-AWAY MODE: ${KEEP_AWAY_RADIUS}px!`);
+  console.log(`💬 CHAT BUBBLE SYNC enabled!`);
   console.log(`⚡ Move Speed: 10 pixels/tick`);
   console.log(`🎮 Game Loop: 20 FPS (50ms)`);
   console.log(`${"★".repeat(60)}\n`);
