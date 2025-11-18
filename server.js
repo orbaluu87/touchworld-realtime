@@ -1,4 +1,3 @@
-
 // ============================================================================
 // Touch World - Socket Server v11.1.0 - PLAYER-ONLY SYSTEM + CHAT BUBBLE SYNC
 // ============================================================================
@@ -488,6 +487,23 @@ app.post("/broadcast-config", (req, res) => {
   res.json({ ok: true, broadcasted: true });
 });
 
+// ---------- Broadcast Donut Respawn Endpoint ----------
+app.post("/broadcast-donut-respawn", (req, res) => {
+  const key = req.headers["x-health-key"];
+  if (key !== HEALTH_KEY) return res.status(403).json({ ok: false });
+  
+  const { area_id, spawn } = req.body;
+  console.log(`🍩 Broadcasting donut respawn in ${area_id}: ${spawn.spawn_id}`);
+  
+  // שידור לכל השחקנים באזור
+  io.to(area_id).emit("donut_respawned", {
+    area_id,
+    spawn
+  });
+  
+  res.json({ ok: true, broadcasted: true });
+});
+
 // ---------- Socket.IO ----------
 const io = new Server(httpServer, {
   cors: {
@@ -720,7 +736,7 @@ io.on("connection", async (socket) => {
   });
 
   // ========== CHANGE_AREA ==========
-  socket.on("change_area", async (data = {}) => {
+  socket.on("change_area", (data = {}) => {
     const p = players.get(socket.id);
     if (!p) return;
 
@@ -731,23 +747,6 @@ io.on("connection", async (socket) => {
     socket.leave(oldArea);
     p.current_area = newArea;
     socket.join(newArea);
-
-    console.log(`🔄 ${p.username} changed area: ${oldArea} → ${newArea}`);
-
-    // ✅ עדכון ב-Player entity
-    try {
-      await fetch(`${BASE44_API_URL}/entities/Player/${p.playerId}`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${BASE44_SERVICE_KEY}`,
-        },
-        body: JSON.stringify({ current_area: newArea }),
-      });
-      console.log(`💾 Updated Player area in DB: ${p.username} → ${newArea}`);
-    } catch (error) {
-      console.error(`❌ Failed to update Player area in DB:`, error);
-    }
 
     socket.to(oldArea).emit("player_area_changed", { id: p.playerId, playerId: p.playerId });
 
@@ -998,6 +997,35 @@ io.on("connection", async (socket) => {
     }
     
     activeTrades.delete(data.trade_id);
+  });
+
+  // ========== DONUT_COLLECTED ==========
+  socket.on("donut_collected", (data = {}) => {
+    const p = players.get(socket.id);
+    if (!p) return;
+
+    console.log(`🍩 Donut collected by ${p.username}: ${data.spawn_id}`);
+    
+    // שידור לכל השחקנים באזור שהסופגניה נאספה
+    io.to(p.current_area).emit("donut_collected", {
+      area_id: p.current_area,
+      spawn_id: data.spawn_id,
+      collected_by: p.username
+    });
+  });
+
+  // ========== DONUT_RESPAWNED ==========
+  socket.on("donut_respawned", (data = {}) => {
+    const p = players.get(socket.id);
+    if (!p || p.admin_level !== 'admin') return;
+
+    console.log(`🍩 Donut respawned in ${data.area_id}: ${data.spawn.spawn_id}`);
+    
+    // שידור לכל השחקנים באזור שסופגניה חדשה הופיעה
+    io.to(data.area_id).emit("donut_respawned", {
+      area_id: data.area_id,
+      spawn: data.spawn
+    });
   });
 
   // ========== DISCONNECT ==========
