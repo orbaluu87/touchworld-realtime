@@ -4,8 +4,9 @@
 
 const fetch = require("node-fetch");
 
-const SPAWN_INTERVAL = 5000; // Check every 5 seconds
 const MAX_DONUTS_PER_AREA = 8;
+const MIN_INTERVAL = 10000; // 10 seconds
+const MAX_INTERVAL = 40000; // 40 seconds
 
 let BASE44_SERVICE_KEY;
 let BASE44_API_URL;
@@ -131,9 +132,24 @@ async function maintainDonuts() {
     if (!allSpawns) return; // If empty or error
 
     for (const area of areas) {
-        if (!area.decorations || !area.decorations.includes('donut_system')) continue;
-
+        const hasSystem = area.decorations && area.decorations.includes('donut_system');
         const areaSpawns = allSpawns.filter(s => s.area_id === area.area_id);
+
+        if (!hasSystem) {
+            // If system was removed, clean up existing donuts
+            if (areaSpawns.length > 0) {
+                console.log(`🧹 Cleaning up donuts from ${area.area_id} (System removed)`);
+                for (const spawn of areaSpawns) {
+                    await apiCall('/entities/DonutSpawn', 'DELETE', { id: spawn.id });
+                    io.to(area.area_id).emit('donut_collected', {
+                        area_id: area.area_id,
+                        spawn_id: spawn.spawn_id,
+                        collected_by_player_id: 'system'
+                    });
+                }
+            }
+            continue;
+        }
         
         if (areaSpawns.length < MAX_DONUTS_PER_AREA) {
             // Spawn one
@@ -147,9 +163,20 @@ function initialize(socketIo, serviceKey, apiUrl) {
     BASE44_SERVICE_KEY = serviceKey;
     BASE44_API_URL = apiUrl;
 
-    console.log('🍩 Donut System Manager - Simplified Version Active');
+    console.log('🍩 Donut System Manager - Random Interval Mode Active');
     
-    setInterval(maintainDonuts, SPAWN_INTERVAL);
+    // Start the random loop
+    scheduleNextSpawn();
+}
+
+function scheduleNextSpawn() {
+    const delay = Math.floor(Math.random() * (MAX_INTERVAL - MIN_INTERVAL + 1)) + MIN_INTERVAL;
+    // console.log(`🍩 Next donut check in ${delay / 1000}s`);
+    
+    setTimeout(async () => {
+        await maintainDonuts();
+        scheduleNextSpawn();
+    }, delay);
 }
 
 function setupSocketHandlers(socket, players) {
