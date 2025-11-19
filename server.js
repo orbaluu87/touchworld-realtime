@@ -49,7 +49,7 @@ if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   process.exit(1);
 }
 
-const VERSION = "11.3.0"; // Donut System Sync Fix
+const VERSION = "11.4.0"; // Dynamic Donut Spawning
 
 // ---------- State ----------
 const players = new Map();
