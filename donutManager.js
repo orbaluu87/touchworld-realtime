@@ -162,11 +162,35 @@ async function maintainDonutCount() {
 
         const areaSpawns = allSpawns.filter(s => s.area_id === area.area_id);
         
-        // א. (בוטל) רענון סופגניות ישנות - המשתמש ביקש שסופגניות לא ייעלמו לבד
-        // הסופגניות יישארו במפה עד שמישהו יאסוף אותן בפועל.
+        // טעינת מפת חסימות לצורך בדיקה
+        let collisionMap = [];
+        try {
+            if (area.collision_map) {
+                collisionMap = typeof area.collision_map === 'string' ? JSON.parse(area.collision_map) : area.collision_map;
+            }
+        } catch (e) {}
+
+        // א. ניקוי סופגניות שנמצאות באזורים חסומים (תיקון רטרואקטיבי)
+        // אם המשתמש עדכן את מפת החסימות, נמחק סופגניות שכבר לא חוקיות
+        for (const spawn of areaSpawns) {
+            if (isPositionBlocked(spawn.position_x, spawn.position_y, collisionMap)) {
+                console.log(`🚫 Removing invalid donut in ${area.area_id} at (${spawn.position_x},${spawn.position_y})`);
+                await apiCall('/entities/DonutSpawn', 'DELETE', { id: spawn.id });
+                
+                io.to(area.area_id).emit('donut_collected', {
+                    area_id: area.area_id,
+                    spawn_id: spawn.spawn_id,
+                    collected_by_player_id: 'system'
+                });
+            }
+        }
+
+        // עדכון הרשימה אחרי המחיקות
+        const validSpawns = areaSpawns.filter(s => !isPositionBlocked(s.position_x, s.position_y, collisionMap));
 
 
-        // ב. מילוי הדרגתי - סופגניה אחת בכל פעימה (50 שניות) עד למקסימום 8
+        // ב. מילוי הדרגתי - סופגניה אחת בכל פעימה (10-40 שניות) עד למקסימום 8
+        if (validSpawns.length < MAX_DONUTS_PER_AREA) {
         // זה מבטיח קצב אחיד ונושם של הופעת סופגניות
         if (areaSpawns.length < MAX_DONUTS_PER_AREA) {
             await spawnDonutInArea(area);
