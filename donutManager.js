@@ -41,13 +41,22 @@ async function apiCall(endpoint, method = 'GET', body = null) {
     }
 }
 
-// בדיקת התנגשות עם אזורים חסומים (פוליגונים)
+// בדיקת התנגשות עם אזורים חסומים (מלבנים או פוליגונים)
 function isPositionBlocked(x, y, collisionMap) {
     if (!collisionMap || !Array.isArray(collisionMap) || collisionMap.length === 0) return false;
     
     for (const shape of collisionMap) {
+        // בדיקה למלבנים (מהעורך החדש)
+        if (typeof shape.x === 'number' && typeof shape.width === 'number') {
+            if (x >= shape.x && x <= shape.x + shape.width &&
+                y >= shape.y && y <= shape.y + shape.height) {
+                return true;
+            }
+            continue;
+        }
+
+        // בדיקה לפוליגונים (תמיכה לאחור)
         if (shape.type === 'polygon' && Array.isArray(shape.points)) {
-            // אלגוריתם Ray Casting לבדיקה אם נקודה בתוך פוליגון
             let inside = false;
             for (let i = 0, j = shape.points.length - 1; i < shape.points.length; j = i++) {
                 const xi = shape.points[i].x, yi = shape.points[i].y;
@@ -57,7 +66,7 @@ function isPositionBlocked(x, y, collisionMap) {
                     (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
                 if (intersect) inside = !inside;
             }
-            if (inside) return true; // הנקודה בתוך אזור חסום
+            if (inside) return true;
         }
     }
     return false;
