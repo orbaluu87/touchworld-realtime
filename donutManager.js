@@ -166,31 +166,3 @@ function initialize(socketIo, serviceKey, apiUrl) {
     // הרצה מיידית
     maintainDonutCount();
 }
-
-function setupSocketHandlers(socket, players) {
-    // הלקוח לא אמור לשדר אירועי איסוף ישירות לסוקט, אלא לקרוא ל-API
-    // ה-API ישדר לכולם דרך הסוקט (אבל כרגע השרת לא מאזין ל-API events)
-    // אז נשאיר את זה כאן למקרה שרוצים אופטימיזציה, אבל ה-Source of Truth הוא ה-API
-    
-    // בעצם, ה-collectDonut function צריכה לשדר לסוקט... אבל היא רצה בסביבה נפרדת (Deno Deploy)
-    // אז השרת הזה (Node) צריך להאזין לשינויים או שהלקוח שביצע את האיסוף ישדר 'אני אספתי'
-    // הפתרון הכי פשוט: הלקוח שקיבל תשובה חיובית מה-API ישדר 'collected' לכולם
-    
-    socket.on('client_collected_donut', (data) => {
-        // אימות בסיסי
-        const p = players.get(socket.id);
-        if (!p) return;
-
-        // הפצה לכולם באזור
-        socket.to(p.current_area).emit('donut_collected', {
-            area_id: p.current_area,
-            spawn_id: data.spawn_id,
-            collected_by_player_id: p.playerId
-        });
-    });
-}
-
-module.exports = {
-    initialize,
-    setupSocketHandlers
-};
