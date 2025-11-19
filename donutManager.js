@@ -2,7 +2,7 @@
 // DONUT SYSTEM MANAGER - מערכת ניהול סופגניות מלאה
 // ============================================================================
 
-const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
+const fetch = require("node-fetch");
 
 const MIN_DONUTS = 3;
 const MAX_DONUTS = 8;
