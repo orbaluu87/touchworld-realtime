@@ -138,27 +138,29 @@ async function maintainDonuts() {
 
     for (const areaId of areaIdsToProcess) {
         const area = activeAreaConfig.get(areaId);
+        
+        // If no active area config found, skip (don't crash, and don't delete donuts from inactive versions)
+        if (!area) continue;
+
         const areaSpawns = allSpawns.filter(s => s.area_id === areaId);
 
         // 1. Parse templates (only if we have an active area config)
         let templates = [];
-        if (area) {
-            try {
-                if (area.decorations) {
-                    const decos = typeof area.decorations === 'string' ? JSON.parse(area.decorations) : area.decorations;
-                    if (Array.isArray(decos)) {
-                        templates = decos.filter(d => d.action_type === 'donut_system');
-                    }
+        try {
+            if (area.decorations) {
+                const decos = typeof area.decorations === 'string' ? JSON.parse(area.decorations) : area.decorations;
+                if (Array.isArray(decos)) {
+                    templates = decos.filter(d => d.action_type === 'donut_system');
                 }
-            } catch (e) {
-                console.error(`Error parsing decorations for area ${area.area_id}`, e);
             }
+        } catch (e) {
+            console.error(`Error parsing decorations for area ${area.area_id}`, e);
         }
 
         // Filter spawns for THIS version
         const versionSpawns = areaSpawns.filter(s => s.version_name === area.version_name);
 
-        // 2. If no system found (no active area OR no templates) -> DELETE donuts for this version
+        // 2. If no system found (active area but no templates) -> DELETE donuts for this version
         if (templates.length === 0) {
             if (versionSpawns.length > 0) {
                 console.log(`🧹 Cleaning up ${versionSpawns.length} donuts from ${areaId} version ${area.version_name} (system removed)`);
@@ -174,4 +176,96 @@ async function maintainDonuts() {
             continue;
         }
 
-        // 3. Sync existing d
+        // 3. Sync existing donuts with current configuration
+        let validSpawns = [];
+        for (const spawn of versionSpawns) {
+            const isValid = templates.some(t => 
+                t.image_url === spawn.image_url && 
+                (t.name || 'donut') === spawn.collectible_type
+            );
+
+            if (!isValid) {
+                console.log(`🧹 Removing outdated donut ${spawn.spawn_id} from ${areaId} version ${area.version_name}`);
+                await apiCall('/entities/DonutSpawn', 'DELETE', { id: spawn.id });
+                io.to(areaId).emit('donut_collected', {
+                    area_id: areaId,
+                    spawn_id: spawn.spawn_id,
+                    collected_by_player_id: 'system'
+                });
+            } else {
+                validSpawns.push(spawn);
+            }
+        }
+
+        // NEW: Rotation logic - if full, delete oldest to allow new spawn event for clients
+        if (validSpawns.length >= MAX_DONUTS_PER_AREA) {
+            // Sort oldest first
+            validSpawns.sort((a, b) => new Date(a.created_date) - new Date(b.created_date));
+            const oldest = validSpawns[0];
+            
+            console.log(`♻️ Rotating donut: Removing oldest ${oldest.spawn_id} to make room`);
+            await apiCall('/entities/DonutSpawn', 'DELETE', { id: oldest.id });
+            
+            io.to(areaId).emit('donut_collected', {
+                area_id: areaId,
+                spawn_id: oldest.spawn_id,
+                collected_by_player_id: 'system'
+            });
+            
+            // Remove from local list so next check allows spawning
+            validSpawns.shift();
+        }
+
+        // 4. Spawn new donuts if needed
+        if (validSpawns.length < MAX_DONUTS_PER_AREA) {
+            await spawnDonutInArea(area, templates);
+        }
+    }
+}
+
+function initialize(socketIo, serviceKey, apiUrl) {
+    io = socketIo;
+    BASE44_SERVICE_KEY = serviceKey;
+    BASE44_API_URL = apiUrl;
+
+    console.log('🍩 Donut System Manager - Random Interval Mode Active');
+    
+    // Start the random loop
+    scheduleNextSpawn();
+}
+
+function scheduleNextSpawn() {
+    const delay = Math.floor(Math.random() * (MAX_INTERVAL - MIN_INTERVAL + 1)) + MIN_INTERVAL;
+    
+    setTimeout(async () => {
+        try {
+            await maintainDonuts();
+        } catch (err) {
+            console.error("❌ Error in donut maintenance loop:", err);
+        }
+        scheduleNextSpawn();
+    }, delay);
+}
+
+function setupSocketHandlers(socket, players) {
+    // Handle real-time collection events
+    socket.on('client_collected_donut', (data) => {
+        const p = players.get(socket.id);
+        if (!p) return;
+
+        // Verify area match
+        if (p.current_area !== data.area_id) return;
+
+        // Broadcast removal to everyone in area
+        socket.to(p.current_area).emit('donut_collected', {
+            area_id: p.current_area,
+            spawn_id: data.spawn_id,
+            collected_by_player_id: p.playerId
+        });
+    });
+}
+
+module.exports = {
+    initialize,
+    setupSocketHandlers
+};
