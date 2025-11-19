@@ -177,7 +177,7 @@ async function maintainDonuts() {
         }
 
         // 3. Sync existing donuts with current configuration
-        let validSpawns = [];
+        let currentValidCount = 0;
         for (const spawn of versionSpawns) {
             const isValid = templates.some(t => 
                 t.image_url === spawn.image_url && 
@@ -193,32 +193,19 @@ async function maintainDonuts() {
                     collected_by_player_id: 'system'
                 });
             } else {
-                validSpawns.push(spawn);
+                currentValidCount++;
             }
         }
 
-        // NEW: Rotation logic - if full, delete oldest to allow new spawn event for clients
-        if (validSpawns.length >= MAX_DONUTS_PER_AREA) {
-            // Sort oldest first
-            validSpawns.sort((a, b) => new Date(a.created_date) - new Date(b.created_date));
-            const oldest = validSpawns[0];
-            
-            console.log(`♻️ Rotating donut: Removing oldest ${oldest.spawn_id} to make room`);
-            await apiCall('/entities/DonutSpawn', 'DELETE', { id: oldest.id });
-            
-            io.to(areaId).emit('donut_collected', {
-                area_id: areaId,
-                spawn_id: oldest.spawn_id,
-                collected_by_player_id: 'system'
-            });
-            
-            // Remove from local list so next check allows spawning
-            validSpawns.shift();
-        }
-
         // 4. Spawn new donuts if needed
-        if (validSpawns.length < MAX_DONUTS_PER_AREA) {
-            await spawnDonutInArea(area, templates);
+        if (currentValidCount < MAX_DONUTS_PER_AREA) {
+            // If we are very low on donuts (e.g. 0 or 1), spawn more aggressively to fill up
+            const missingCount = MAX_DONUTS_PER_AREA - currentValidCount;
+            const spawnAmount = missingCount > 4 ? 3 : 1; 
+            
+            for (let i = 0; i < spawnAmount; i++) {
+                await spawnDonutInArea(area, templates);
+            }
         }
     }
 }
