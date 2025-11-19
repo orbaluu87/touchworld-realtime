@@ -101,7 +101,8 @@ async function spawnDonutInArea(area) {
     };
 
     // שמירה במסד נתונים
-    const created = await apiCall('/entities/DonutSpawn/create', 'POST', spawnData);
+    // שינוי נתיב: הסרת /create כי השרת מפרש אותו כ-ID
+    const created = await apiCall('/entities/DonutSpawn', 'POST', spawnData);
 
     if (created) {
         console.log(`🍩 Spawned ${created.collectible_type} in ${area.area_id}`);
@@ -113,12 +114,19 @@ async function spawnDonutInArea(area) {
 }
 
 async function maintainDonutCount() {
-    const areas = await apiCall('/entities/Area/list');
-    if (!areas) return;
+    // שינוי נתיב: הסרת /list כי השרת מפרש אותו כ-ID
+    const areas = await apiCall('/entities/Area');
+    if (!areas || !Array.isArray(areas)) {
+        console.error('Invalid areas response:', areas);
+        return;
+    }
 
     // קבלת כל הסופגניות הקיימות כרגע
-    const allSpawns = await apiCall('/entities/DonutSpawn/list');
-    if (!allSpawns) return;
+    const allSpawns = await apiCall('/entities/DonutSpawn');
+    if (!allSpawns || !Array.isArray(allSpawns)) {
+        console.error('Invalid spawns response:', allSpawns);
+        return;
+    }
 
     for (const area of areas) {
         // בדיקה אם האזור תומך בסופגניות
