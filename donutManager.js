@@ -1,22 +1,18 @@
 // ============================================================================
-// DONUT SYSTEM MANAGER (Server Side - Robust Version)
+// DONUT SYSTEM MANAGER (Simplified & Robust)
 // ============================================================================
 
 const fetch = require("node-fetch");
 
-// --- קונפיגורציה ---
-const MIN_DONUTS_PER_AREA = 3;
+const SPAWN_INTERVAL = 5000; // Check every 5 seconds
 const MAX_DONUTS_PER_AREA = 8;
-const MIN_INTERVAL = 10000; // 10 שניות
-const MAX_INTERVAL = 40000; // 40 שניות
 
 let BASE44_SERVICE_KEY;
 let BASE44_API_URL;
 let io;
 
-// --- פונקציות עזר ---
+// --- Helper Functions ---
 
-// עטיפה לקריאות API מול Base44
 async function apiCall(endpoint, method = 'GET', body = null) {
     try {
         const url = `${BASE44_API_URL}${endpoint}`;
@@ -31,6 +27,8 @@ async function apiCall(endpoint, method = 'GET', body = null) {
         
         const res = await fetch(url, options);
         if (!res.ok) {
+            // Handle 404s silently if needed
+            if (res.status === 404) return null;
             const text = await res.text();
             throw new Error(`API Error ${res.status}: ${text}`);
         }
@@ -41,60 +39,39 @@ async function apiCall(endpoint, method = 'GET', body = null) {
     }
 }
 
-// בדיקת התנגשות עם אזורים חסומים (מלבנים או פוליגונים)
 function isPositionBlocked(x, y, collisionMap) {
     if (!collisionMap || !Array.isArray(collisionMap) || collisionMap.length === 0) return false;
     
     for (const shape of collisionMap) {
         if (!shape) continue;
-
-        // בדיקה למלבנים (מהעורך החדש)
-        // מוודאים שכל הפרמטרים קיימים ותקינים
+        
         if (typeof shape.x === 'number' && typeof shape.y === 'number' && 
             typeof shape.width === 'number' && typeof shape.height === 'number') {
             
-            // בדיקה מדויקת
             if (x >= shape.x && x <= shape.x + shape.width &&
                 y >= shape.y && y <= shape.y + shape.height) {
-                // console.log(`🚫 Position (${x},${y}) is inside rect: [${shape.x}, ${shape.y}, ${shape.width}, ${shape.height}]`);
                 return true;
             }
-            continue;
-        }
-
-        // בדיקה לפוליגונים (תמיכה לאחור)
-        if (shape.type === 'polygon' && Array.isArray(shape.points)) {
-            let inside = false;
-            for (let i = 0, j = shape.points.length - 1; i < shape.points.length; j = i++) {
-                const xi = shape.points[i].x, yi = shape.points[i].y;
-                const xj = shape.points[j].x, yj = shape.points[j].y;
-                
-                const intersect = ((yi > y) !== (yj > y)) &&
-                    (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
-                if (intersect) inside = !inside;
-            }
-            if (inside) return true;
         }
     }
     return false;
 }
 
-// יצירת סופגניה באזור ספציפי
 async function spawnDonutInArea(area) {
-    // 1. חילוץ תבניות סופגניות מההגדרות של האזור
+    // 1. Get templates
     let templates = [];
     try {
-        if (!area.decorations) return;
-        const decos = typeof area.decorations === 'string' ? JSON.parse(area.decorations) : area.decorations;
-        templates = decos.filter(d => d.action_type === 'donut_system');
+        if (area.decorations) {
+            const decos = typeof area.decorations === 'string' ? JSON.parse(area.decorations) : area.decorations;
+            templates = decos.filter(d => d.action_type === 'donut_system');
+        }
     } catch (e) {
-        console.error(`Error parsing decorations for area ${area.area_id}`, e);
-        return;
+        console.error('Error parsing decorations', e);
     }
 
     if (templates.length === 0) return;
 
-    // 2. טעינת מפת התנגשויות
+    // 2. Get collision map
     let collisionMap = [];
     try {
         if (area.collision_map) {
@@ -102,40 +79,31 @@ async function spawnDonutInArea(area) {
         }
     } catch (e) {}
 
-    // 3. ניסיון למצוא מיקום פנוי (הגדלתי ל-50 ניסיונות ליתר ביטחון)
+    // 3. Find position
     let pos = null;
-    const PADDING = 150; // שוליים מהקצוות
+    const PADDING = 100;
     const MAP_WIDTH = 1380;
     const MAP_HEIGHT = 770;
-    
-    // אם יש מפה, בודקים שאין התנגשויות
-    // אם אין מפה, אז רק מקפידים על השוליים
-    const hasCollisionMap = collisionMap && collisionMap.length > 0;
 
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 20; i++) {
         const x = PADDING + Math.floor(Math.random() * (MAP_WIDTH - (PADDING * 2)));
         const y = PADDING + Math.floor(Math.random() * (MAP_HEIGHT - (PADDING * 2)));
         
-        if (!hasCollisionMap || !isPositionBlocked(x, y, collisionMap)) {
+        if (!isPositionBlocked(x, y, collisionMap)) {
             pos = { x, y };
             break;
         }
     }
 
-    if (!pos) {
-        console.log(`⚠️ Could not find free position for donut in ${area.area_id} after 50 attempts`);
-        return;
-    }
+    if (!pos) return;
 
-    // 4. בחירת סופגניה רנדומלית מהתבניות
-    // משתמשים ב-Math.floor ו-Math.random שוב כדי להבטיח גיוון
-    const randomIndex = Math.floor(Math.random() * templates.length);
-    const template = templates[randomIndex];
+    // 4. Create
+    const template = templates[Math.floor(Math.random() * templates.length)];
     
     const spawnData = {
         area_id: area.area_id,
-        spawn_id: `donut_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
-        collectible_type: template.name || 'donut', // השם שיוצג
+        spawn_id: `donut_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+        collectible_type: template.name || 'donut',
         collectible_name: template.name || 'donut',
         position_x: Math.round(pos.x),
         position_y: Math.round(pos.y),
@@ -144,13 +112,10 @@ async function spawnDonutInArea(area) {
         is_collected: false
     };
 
-    // 5. שמירה ב-DB
-    // שים לב: משתמשים בנתיב הישיר ליצירת ישות
     const created = await apiCall('/entities/DonutSpawn', 'POST', spawnData);
 
-    // 6. שידור לכל השחקנים באזור
     if (created) {
-        console.log(`🍩 Spawned ${created.collectible_type} in ${area.area_id} at (${created.position_x},${created.position_y})`);
+        console.log(`🍩 New Donut: ${area.area_id} (${created.position_x},${created.position_y})`);
         io.to(area.area_id).emit('donut_spawned', {
             area_id: area.area_id,
             spawn: created
@@ -158,88 +123,45 @@ async function spawnDonutInArea(area) {
     }
 }
 
-// הפונקציה הראשית שרצה בלולאה
-async function maintainDonutCount() {
-    // 1. שליפת כל האזורים
+async function maintainDonuts() {
     const areas = await apiCall('/entities/Area');
     if (!areas || !Array.isArray(areas)) return;
 
-    // 2. שליפת כל הסופגניות הפעילות
     const allSpawns = await apiCall('/entities/DonutSpawn');
-    if (!allSpawns || !Array.isArray(allSpawns)) return;
+    if (!allSpawns) return; // If empty or error
 
-    // 3. מעבר על כל אזור ובדיקה אם חסר סופגניות או שצריך לרענן
     for (const area of areas) {
-        // דילוג על אזורים ללא הגדרת מערכת סופגניות
         if (!area.decorations || !area.decorations.includes('donut_system')) continue;
 
         const areaSpawns = allSpawns.filter(s => s.area_id === area.area_id);
         
-        // טעינת מפת חסימות לצורך בדיקה
-        let collisionMap = [];
-        try {
-            if (area.collision_map) {
-                collisionMap = typeof area.collision_map === 'string' ? JSON.parse(area.collision_map) : area.collision_map;
-            }
-        } catch (e) {}
-
-        // א. ניקוי סופגניות שנמצאות באזורים חסומים (תיקון רטרואקטיבי)
-        // אם המשתמש עדכן את מפת החסימות, נמחק סופגניות שכבר לא חוקיות
-        for (const spawn of areaSpawns) {
-            if (isPositionBlocked(spawn.position_x, spawn.position_y, collisionMap)) {
-                console.log(`🚫 Removing invalid donut in ${area.area_id} at (${spawn.position_x},${spawn.position_y})`);
-                await apiCall('/entities/DonutSpawn', 'DELETE', { id: spawn.id });
-                
-                io.to(area.area_id).emit('donut_collected', {
-                    area_id: area.area_id,
-                    spawn_id: spawn.spawn_id,
-                    collected_by_player_id: 'system'
-                });
-            }
-        }
-
-        // עדכון הרשימה אחרי המחיקות
-        const validSpawns = areaSpawns.filter(s => !isPositionBlocked(s.position_x, s.position_y, collisionMap));
-
-
-        // ב. מילוי הדרגתי - סופגניה אחת בכל פעימה (10-40 שניות) עד למקסימום 8
-        if (validSpawns.length < MAX_DONUTS_PER_AREA) {
+        if (areaSpawns.length < MAX_DONUTS_PER_AREA) {
+            // Spawn one
             await spawnDonutInArea(area);
         }
     }
 }
 
-// אתחול המערכת
 function initialize(socketIo, serviceKey, apiUrl) {
     io = socketIo;
     BASE44_SERVICE_KEY = serviceKey;
     BASE44_API_URL = apiUrl;
 
-    console.log('🍩 Donut System Manager v3.0 (Perfect Sync) Initialized');
+    console.log('🍩 Donut System Manager - Simplified Version Active');
     
-    // הפעלה ראשונית והתחלת הלולאה הרנדומלית
-    scheduleNextLoop();
+    setInterval(maintainDonuts, SPAWN_INTERVAL);
 }
 
-function scheduleNextLoop() {
-    // הרצת הפונקציה
-    maintainDonutCount().finally(() => {
-        // תזמון הפעם הבאה בזמן רנדומלי
-        const delay = Math.floor(Math.random() * (MAX_INTERVAL - MIN_INTERVAL + 1)) + MIN_INTERVAL;
-        // console.log(`🍩 Next spawn check in ${delay/1000} seconds`);
-        setTimeout(scheduleNextLoop, delay);
-    });
-}
-
-// הגדרת מאזיני סוקט (אם צריך)
 function setupSocketHandlers(socket, players) {
-    // כרגע האיסוף מתבצע דרך ה-API ואז משודר דרך הלקוח או השרת
-    // הלקוח משדר 'client_collected_donut' לאחר הצלחה ב-API כדי לעדכן אחרים מיידית
+    // Handle real-time collection events
     socket.on('client_collected_donut', (data) => {
         const p = players.get(socket.id);
         if (!p) return;
 
-        // שידור לכל השחקנים האחרים באותו אזור שהסופגניה נאספה
+        // Verify area match
+        if (p.current_area !== data.area_id) return;
+
+        // Broadcast removal to everyone in area
         socket.to(p.current_area).emit('donut_collected', {
             area_id: p.current_area,
             spawn_id: data.spawn_id,
