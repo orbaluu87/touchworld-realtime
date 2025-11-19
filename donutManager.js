@@ -7,7 +7,8 @@ const fetch = require("node-fetch");
 // --- קונפיגורציה ---
 const MIN_DONUTS_PER_AREA = 3;
 const MAX_DONUTS_PER_AREA = 8;
-const SPAWN_CHECK_INTERVAL = 50000; // בדיקה כל 50 שניות (קצב איטי מאוד)
+const MIN_INTERVAL = 10000; // 10 שניות
+const MAX_INTERVAL = 40000; // 40 שניות
 
 let BASE44_SERVICE_KEY;
 let BASE44_API_URL;
@@ -152,29 +153,9 @@ async function maintainDonutCount() {
 
         const areaSpawns = allSpawns.filter(s => s.area_id === area.area_id);
         
-        // א. רענון סופגניות ישנות - כדי שהמיקומים ישתנו גם אם לא אוספים
-        // מוחקים סופגניה אחת ישנה (מעל 5 דקות) בכל סבב כדי לרענן מיקומים
-        const staleTimestamp = Date.now() - (5 * 60 * 1000); 
-        const staleDonut = areaSpawns.find(s => {
-            // מנסים לחלץ זמן יצירה מה-ID אם אין שדה created_at
-            const parts = s.spawn_id.split('_');
-            const createdTime = parseInt(parts[1]) || 0;
-            return createdTime < staleTimestamp;
-        });
+        // א. (בוטל) רענון סופגניות ישנות - המשתמש ביקש שסופגניות לא ייעלמו לבד
+        // הסופגניות יישארו במפה עד שמישהו יאסוף אותן בפועל.
 
-        if (staleDonut) {
-            // מוחקים את הישנה
-            console.log(`♻️ Recycling stale donut in ${area.area_id}`);
-            await apiCall(`/entities/DonutSpawn`, 'DELETE', { id: staleDonut.id }); // או קריאה מתאימה למחיקה
-            // השידור למחיקה יתבצע ע"י הסרתה ברשימה הבאה, או שאפשר לשדר יזום
-            io.to(area.area_id).emit('donut_collected', { 
-                area_id: area.area_id, 
-                spawn_id: staleDonut.spawn_id,
-                collected_by_player_id: 'system' // סימון שנמחק ע"י המערכת
-            });
-            // לא מייצרים חדשה מיד, ניתן ללוגיקה הרגילה למטה לעבוד
-            continue; // נעבור לאזור הבא, ניתן ללופ הבא למלא את החסר
-        }
 
         // ב. מילוי הדרגתי - סופגניה אחת בכל פעימה (50 שניות) עד למקסימום 8
         // זה מבטיח קצב אחיד ונושם של הופעת סופגניות
@@ -192,11 +173,18 @@ function initialize(socketIo, serviceKey, apiUrl) {
 
     console.log('🍩 Donut System Manager v3.0 (Perfect Sync) Initialized');
     
-    // הפעלה ראשונית מיד
-    maintainDonutCount();
+    // הפעלה ראשונית והתחלת הלולאה הרנדומלית
+    scheduleNextLoop();
+}
 
-    // הפעלת הלולאה
-    setInterval(maintainDonutCount, SPAWN_CHECK_INTERVAL);
+function scheduleNextLoop() {
+    // הרצת הפונקציה
+    maintainDonutCount().finally(() => {
+        // תזמון הפעם הבאה בזמן רנדומלי
+        const delay = Math.floor(Math.random() * (MAX_INTERVAL - MIN_INTERVAL + 1)) + MIN_INTERVAL;
+        // console.log(`🍩 Next spawn check in ${delay/1000} seconds`);
+        setTimeout(scheduleNextLoop, delay);
+    });
 }
 
 // הגדרת מאזיני סוקט (אם צריך)
