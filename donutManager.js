@@ -58,19 +58,8 @@ function isPositionBlocked(x, y, collisionMap) {
     return false;
 }
 
-async function spawnDonutInArea(area) {
-    // 1. Get templates
-    let templates = [];
-    try {
-        if (area.decorations) {
-            const decos = typeof area.decorations === 'string' ? JSON.parse(area.decorations) : area.decorations;
-            templates = decos.filter(d => d.action_type === 'donut_system');
-        }
-    } catch (e) {
-        console.error('Error parsing decorations', e);
-    }
-
-    if (templates.length === 0) return;
+async function spawnDonutInArea(area, templates) {
+    if (!templates || templates.length === 0) return;
 
     // 2. Get collision map
     let collisionMap = [];
@@ -128,17 +117,28 @@ async function maintainDonuts() {
     const areas = await apiCall('/entities/Area');
     if (!areas || !Array.isArray(areas)) return;
 
-    const allSpawns = await apiCall('/entities/DonutSpawn');
-    if (!allSpawns) return; // If empty or error
+    const allSpawns = await apiCall('/entities/DonutSpawn') || [];
 
     for (const area of areas) {
-        const hasSystem = area.decorations && area.decorations.includes('donut_system');
+        // 1. Parse templates
+        let templates = [];
+        try {
+            if (area.decorations) {
+                const decos = typeof area.decorations === 'string' ? JSON.parse(area.decorations) : area.decorations;
+                if (Array.isArray(decos)) {
+                    templates = decos.filter(d => d.action_type === 'donut_system');
+                }
+            }
+        } catch (e) {
+            console.error(`Error parsing decorations for area ${area.area_id}`, e);
+        }
+
         const areaSpawns = allSpawns.filter(s => s.area_id === area.area_id);
 
-        if (!hasSystem) {
-            // If system was removed, clean up existing donuts
+        // 2. If no system found -> DELETE ALL donuts in this area
+        if (templates.length === 0) {
             if (areaSpawns.length > 0) {
-                console.log(`🧹 Cleaning up donuts from ${area.area_id} (System removed)`);
+                console.log(`🧹 Cleaning up ${areaSpawns.length} donuts from ${area.area_id} (system removed)`);
                 for (const spawn of areaSpawns) {
                     await apiCall('/entities/DonutSpawn', 'DELETE', { id: spawn.id });
                     io.to(area.area_id).emit('donut_collected', {
@@ -150,10 +150,29 @@ async function maintainDonuts() {
             }
             continue;
         }
-        
-        if (areaSpawns.length < MAX_DONUTS_PER_AREA) {
-            // Spawn one
-            await spawnDonutInArea(area);
+
+        // 3. Validate existing spawns (Delete outdated types)
+        const validTypes = new Set(templates.map(t => t.name || 'donut'));
+        let validCount = 0;
+
+        for (const spawn of areaSpawns) {
+            // If the spawn type is not in current templates -> Delete it
+            if (!validTypes.has(spawn.collectible_type)) {
+                console.log(`♻️ Removing outdated donut: ${spawn.collectible_type} in ${area.area_id}`);
+                await apiCall('/entities/DonutSpawn', 'DELETE', { id: spawn.id });
+                io.to(area.area_id).emit('donut_collected', {
+                    area_id: area.area_id,
+                    spawn_id: spawn.spawn_id,
+                    collected_by_player_id: 'system'
+                });
+            } else {
+                validCount++;
+            }
+        }
+
+        // 4. Spawn new if needed
+        if (validCount < MAX_DONUTS_PER_AREA) {
+            await spawnDonutInArea(area, templates);
         }
     }
 }
