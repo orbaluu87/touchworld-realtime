@@ -7,7 +7,7 @@ const fetch = require("node-fetch");
 // --- קונפיגורציה ---
 const MIN_DONUTS_PER_AREA = 3;
 const MAX_DONUTS_PER_AREA = 8;
-const SPAWN_CHECK_INTERVAL = 10000; // בדיקה כל 10 שניות
+const SPAWN_CHECK_INTERVAL = 50000; // בדיקה כל 50 שניות (קצב איטי מאוד)
 
 let BASE44_SERVICE_KEY;
 let BASE44_API_URL;
@@ -176,18 +176,10 @@ async function maintainDonutCount() {
             continue; // נעבור לאזור הבא, ניתן ללופ הבא למלא את החסר
         }
 
-        // ב. מילוי הדרגתי
-        if (areaSpawns.length < MIN_DONUTS_PER_AREA) {
-            // חסר כדי להגיע למינימום - מייצרים אחת בלבד בכל סבב כדי ליצור אפקט "טיפטוף"
-            // ורק בסיכוי של 50% כדי שזה לא ירגיש רובוטי
-            if (Math.random() > 0.5) {
-                await spawnDonutInArea(area);
-            }
-        } else if (areaSpawns.length < MAX_DONUTS_PER_AREA) {
-            // יש מינימום, רוצים עוד קצת גיוון? סיכוי נמוך יותר
-            if (Math.random() > 0.85) { // 15% סיכוי
-                await spawnDonutInArea(area);
-            }
+        // ב. מילוי הדרגתי - סופגניה אחת בכל פעימה (50 שניות) עד למקסימום 8
+        // זה מבטיח קצב אחיד ונושם של הופעת סופגניות
+        if (areaSpawns.length < MAX_DONUTS_PER_AREA) {
+            await spawnDonutInArea(area);
         }
     }
 }
