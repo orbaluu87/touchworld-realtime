@@ -145,19 +145,47 @@ async function maintainDonutCount() {
     const allSpawns = await apiCall('/entities/DonutSpawn');
     if (!allSpawns || !Array.isArray(allSpawns)) return;
 
-    // 3. מעבר על כל אזור ובדיקה אם חסר סופגניות
+    // 3. מעבר על כל אזור ובדיקה אם חסר סופגניות או שצריך לרענן
     for (const area of areas) {
         // דילוג על אזורים ללא הגדרת מערכת סופגניות
         if (!area.decorations || !area.decorations.includes('donut_system')) continue;
 
         const areaSpawns = allSpawns.filter(s => s.area_id === area.area_id);
         
+        // א. רענון סופגניות ישנות - כדי שהמיקומים ישתנו גם אם לא אוספים
+        // מוחקים סופגניה אחת ישנה (מעל 5 דקות) בכל סבב כדי לרענן מיקומים
+        const staleTimestamp = Date.now() - (5 * 60 * 1000); 
+        const staleDonut = areaSpawns.find(s => {
+            // מנסים לחלץ זמן יצירה מה-ID אם אין שדה created_at
+            const parts = s.spawn_id.split('_');
+            const createdTime = parseInt(parts[1]) || 0;
+            return createdTime < staleTimestamp;
+        });
+
+        if (staleDonut) {
+            // מוחקים את הישנה
+            console.log(`♻️ Recycling stale donut in ${area.area_id}`);
+            await apiCall(`/entities/DonutSpawn`, 'DELETE', { id: staleDonut.id }); // או קריאה מתאימה למחיקה
+            // השידור למחיקה יתבצע ע"י הסרתה ברשימה הבאה, או שאפשר לשדר יזום
+            io.to(area.area_id).emit('donut_collected', { 
+                area_id: area.area_id, 
+                spawn_id: staleDonut.spawn_id,
+                collected_by_player_id: 'system' // סימון שנמחק ע"י המערכת
+            });
+            // לא מייצרים חדשה מיד, ניתן ללוגיקה הרגילה למטה לעבוד
+            continue; // נעבור לאזור הבא, ניתן ללופ הבא למלא את החסר
+        }
+
+        // ב. מילוי הדרגתי
         if (areaSpawns.length < MIN_DONUTS_PER_AREA) {
-            // חסר - נייצר אחת
-            await spawnDonutInArea(area);
+            // חסר כדי להגיע למינימום - מייצרים אחת בלבד בכל סבב כדי ליצור אפקט "טיפטוף"
+            // ורק בסיכוי של 50% כדי שזה לא ירגיש רובוטי
+            if (Math.random() > 0.5) {
+                await spawnDonutInArea(area);
+            }
         } else if (areaSpawns.length < MAX_DONUTS_PER_AREA) {
-            // יש מינימום, אבל לא מקסימום - סיכוי קטן לייצר עוד אחת לגיוון
-            if (Math.random() > 0.8) { // 20% סיכוי
+            // יש מינימום, רוצים עוד קצת גיוון? סיכוי נמוך יותר
+            if (Math.random() > 0.85) { // 15% סיכוי
                 await spawnDonutInArea(area);
             }
         }
