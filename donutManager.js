@@ -46,10 +46,17 @@ function isPositionBlocked(x, y, collisionMap) {
     if (!collisionMap || !Array.isArray(collisionMap) || collisionMap.length === 0) return false;
     
     for (const shape of collisionMap) {
+        if (!shape) continue;
+
         // בדיקה למלבנים (מהעורך החדש)
-        if (typeof shape.x === 'number' && typeof shape.width === 'number') {
+        // מוודאים שכל הפרמטרים קיימים ותקינים
+        if (typeof shape.x === 'number' && typeof shape.y === 'number' && 
+            typeof shape.width === 'number' && typeof shape.height === 'number') {
+            
+            // בדיקה מדויקת
             if (x >= shape.x && x <= shape.x + shape.width &&
                 y >= shape.y && y <= shape.y + shape.height) {
+                // console.log(`🚫 Position (${x},${y}) is inside rect: [${shape.x}, ${shape.y}, ${shape.width}, ${shape.height}]`);
                 return true;
             }
             continue;
@@ -95,29 +102,35 @@ async function spawnDonutInArea(area) {
         }
     } catch (e) {}
 
-    // 3. ניסיון למצוא מיקום פנוי (עד 20 ניסיונות)
+    // 3. ניסיון למצוא מיקום פנוי (הגדלתי ל-50 ניסיונות ליתר ביטחון)
     let pos = null;
     const PADDING = 150; // שוליים מהקצוות
     const MAP_WIDTH = 1380;
     const MAP_HEIGHT = 770;
+    
+    // אם יש מפה, בודקים שאין התנגשויות
+    // אם אין מפה, אז רק מקפידים על השוליים
+    const hasCollisionMap = collisionMap && collisionMap.length > 0;
 
-    for (let i = 0; i < 20; i++) {
-        const x = PADDING + Math.random() * (MAP_WIDTH - (PADDING * 2));
-        const y = PADDING + Math.random() * (MAP_HEIGHT - (PADDING * 2));
+    for (let i = 0; i < 50; i++) {
+        const x = PADDING + Math.floor(Math.random() * (MAP_WIDTH - (PADDING * 2)));
+        const y = PADDING + Math.floor(Math.random() * (MAP_HEIGHT - (PADDING * 2)));
         
-        if (!isPositionBlocked(x, y, collisionMap)) {
+        if (!hasCollisionMap || !isPositionBlocked(x, y, collisionMap)) {
             pos = { x, y };
             break;
         }
     }
 
     if (!pos) {
-        // console.log(`Could not find free position for donut in ${area.area_id}`);
+        console.log(`⚠️ Could not find free position for donut in ${area.area_id} after 50 attempts`);
         return;
     }
 
     // 4. בחירת סופגניה רנדומלית מהתבניות
-    const template = templates[Math.floor(Math.random() * templates.length)];
+    // משתמשים ב-Math.floor ו-Math.random שוב כדי להבטיח גיוון
+    const randomIndex = Math.floor(Math.random() * templates.length);
+    const template = templates[randomIndex];
     
     const spawnData = {
         area_id: area.area_id,
@@ -191,8 +204,6 @@ async function maintainDonutCount() {
 
         // ב. מילוי הדרגתי - סופגניה אחת בכל פעימה (10-40 שניות) עד למקסימום 8
         if (validSpawns.length < MAX_DONUTS_PER_AREA) {
-        // זה מבטיח קצב אחיד ונושם של הופעת סופגניות
-        if (areaSpawns.length < MAX_DONUTS_PER_AREA) {
             await spawnDonutInArea(area);
         }
     }
