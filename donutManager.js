@@ -1,12 +1,12 @@
 // ============================================================================
-// DONUT SYSTEM MANAGER (Simplified & Robust)
+// DONUT SYSTEM MANAGER (Robust & Version-Aware)
 // ============================================================================
 
 const fetch = require("node-fetch");
 
 const MAX_DONUTS_PER_AREA = 8;
-const MIN_INTERVAL = 10000; // 10 seconds
-const MAX_INTERVAL = 40000; // 40 seconds
+// Interval for the maintenance loop
+const MAINTENANCE_INTERVAL = 10000; // 10 seconds
 
 let BASE44_SERVICE_KEY;
 let BASE44_API_URL;
@@ -114,13 +114,35 @@ async function spawnDonutInArea(area, templates) {
 }
 
 async function maintainDonuts() {
-    const areas = await apiCall('/entities/Area');
+    // 1. Fetch ONLY active areas. The donuts must belong to the specific version.
+    // DonutSpawn.area_id must match Area.area_id.
+    // If an area version is replaced, the old area_id is no longer in this list.
+    const areas = await apiCall('/entities/Area?is_active=true');
     if (!areas || !Array.isArray(areas)) return;
 
     const allSpawns = await apiCall('/entities/DonutSpawn') || [];
+    const activeAreaIds = new Set(areas.map(a => a.area_id));
 
+    // === CLEANUP STAGE 1: Remove donuts from inactive/deleted area versions ===
+    // If a donut's area_id is not in the currently active areas list, delete it.
+    const orphanedSpawns = allSpawns.filter(s => !activeAreaIds.has(s.area_id));
+    
+    if (orphanedSpawns.length > 0) {
+        console.log(`🧹 Cleaning up ${orphanedSpawns.length} orphaned donuts (area version changed/deleted)`);
+        for (const spawn of orphanedSpawns) {
+            await apiCall('/entities/DonutSpawn', 'DELETE', { id: spawn.id });
+            // Try to notify clients if they are still lingering on that ID (unlikely but safe)
+            io.emit('donut_collected', {
+                area_id: spawn.area_id,
+                spawn_id: spawn.spawn_id,
+                collected_by_player_id: 'system'
+            });
+        }
+    }
+
+    // === MAINTENANCE STAGE 2: Process active areas ===
     for (const area of areas) {
-        // 1. Parse templates
+        // Parse templates
         let templates = [];
         try {
             if (area.decorations) {
@@ -135,10 +157,10 @@ async function maintainDonuts() {
 
         const areaSpawns = allSpawns.filter(s => s.area_id === area.area_id);
 
-        // 2. If no system found -> DELETE ALL donuts in this area
+        // If no system found in THIS active version -> DELETE ALL donuts for this area
         if (templates.length === 0) {
             if (areaSpawns.length > 0) {
-                console.log(`🧹 Cleaning up ${areaSpawns.length} donuts from ${area.area_id} (system removed)`);
+                console.log(`🧹 Cleaning up ${areaSpawns.length} donuts from ${area.area_id} (feature disabled in this version)`);
                 for (const spawn of areaSpawns) {
                     await apiCall('/entities/DonutSpawn', 'DELETE', { id: spawn.id });
                     io.to(area.area_id).emit('donut_collected', {
@@ -151,8 +173,7 @@ async function maintainDonuts() {
             continue;
         }
 
-        // 3. Sync existing donuts with current configuration
-        // Delete donuts that don't match current templates (e.g. image changed in editor)
+        // Sync existing donuts with current configuration (delete invalid types/images)
         let currentValidCount = 0;
         for (const spawn of areaSpawns) {
             const isValid = templates.some(t => 
@@ -173,9 +194,17 @@ async function maintainDonuts() {
             }
         }
 
-        // 4. Spawn new donuts if needed
+        // Spawn new donuts if needed
+        // LOGIC: Spawn ONE donut per cycle (10s) with a probability check to simulate 10-40s variability.
+        // If we need donuts (currentValidCount < MAX), we roll the dice.
+        // 0.5 probability -> Avg 2 cycles -> 20s. Range effectively 10s - infinity, but tightly bound around 20s.
+        // This ensures we don't spawn all 8 instantly.
         if (currentValidCount < MAX_DONUTS_PER_AREA) {
-            await spawnDonutInArea(area, templates);
+            // 40% chance to spawn in this 10s window.
+            // This gives a "feel" of randomness between 10s and ~40s on average.
+            if (Math.random() < 0.4) { 
+                await spawnDonutInArea(area, templates);
+            }
         }
     }
 }
@@ -185,20 +214,15 @@ function initialize(socketIo, serviceKey, apiUrl) {
     BASE44_SERVICE_KEY = serviceKey;
     BASE44_API_URL = apiUrl;
 
-    console.log('🍩 Donut System Manager - Random Interval Mode Active');
+    console.log('🍩 Donut System Manager - Robust Version-Aware Mode Active');
     
-    // Start the random loop
-    scheduleNextSpawn();
-}
-
-function scheduleNextSpawn() {
-    const delay = Math.floor(Math.random() * (MAX_INTERVAL - MIN_INTERVAL + 1)) + MIN_INTERVAL;
-    // console.log(`🍩 Next donut check in ${delay / 1000}s`);
-    
-    setTimeout(async () => {
+    // Run maintenance every 10 seconds
+    setInterval(async () => {
         await maintainDonuts();
-        scheduleNextSpawn();
-    }, delay);
+    }, MAINTENANCE_INTERVAL);
+    
+    // Initial run
+    maintainDonuts();
 }
 
 function setupSocketHandlers(socket, players) {
