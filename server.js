@@ -49,7 +49,7 @@ if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   process.exit(1);
 }
 
-const VERSION = "11.1.0";
+const VERSION = "11.1.1"; // Bump version to force restart
 
 // ---------- State ----------
 const players = new Map();
