@@ -1,5 +1,5 @@
 // ============================================================================
-// Touch World - Socket Server v11.1.0 - PLAYER-ONLY SYSTEM + CHAT BUBBLE SYNC
+// Touch World - Socket Server v11.3.0 - PLAYER-ONLY SYSTEM + DONUT SYNC FIXED
 // ============================================================================
 
 const { createServer } = require("http");
@@ -49,7 +49,7 @@ if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   process.exit(1);
 }
 
-const VERSION = "11.1.1"; // Bump version to force restart
+const VERSION = "11.3.0"; // Donut System Sync Fix
 
 // ---------- State ----------
 const players = new Map();
@@ -234,7 +234,7 @@ async function getEquippedItemsFromOffer(playerId, offerItems) {
   if (!offerItems || offerItems.length === 0) return [];
 
   try {
-    const itemsResponse = await fetch(`${BASE44_API_URL}/entities/Item/list`, {
+    const itemsResponse = await fetch(`${BASE44_API_URL}/entities/Item`, {
       method: "GET",
       headers: {
         "Content-Type": "application/json",
@@ -442,11 +442,9 @@ function broadcastTradeUpdate(tradeId, io) {
   };
   
   if (initSid) {
-    console.log(`📤 Sending to initiator ${initiatorPlayer?.username}`);
     io.to(initSid).emit("trade_status_updated", payload);
   }
   if (recvSid) {
-    console.log(`📤 Sending to receiver ${receiverPlayer?.username}`);
     io.to(recvSid).emit("trade_status_updated", payload);
   }
 }
@@ -482,7 +480,6 @@ app.post("/broadcast-config", (req, res) => {
   const { type } = req.body;
   console.log(`⚙️ Broadcasting config update: ${type}`);
   
-  // שידור לכל המשחקים המחוברים
   io.emit("config_refresh_required", { type });
   
   res.json({ ok: true, broadcasted: true });
@@ -561,7 +558,9 @@ io.on("connection", async (socket) => {
   console.log(`🟢 Connected: ${player.username} (${player.current_area})`);
 
   // ========== DONUT SYSTEM ==========
-  donutManager.setupSocketHandlers(socket, players);
+  if (donutManager && typeof donutManager.setupSocketHandlers === 'function') {
+      donutManager.setupSocketHandlers(socket, players);
+  }
 
   // ========== MOVE_TO ==========
   socket.on("move_to", (data = {}) => {
@@ -696,7 +695,6 @@ io.on("connection", async (socket) => {
 
     console.log(`⚙️ Admin ${adminPlayer.username} updated config: ${data.type}`);
     
-    // ✅ שידור לכל המשחקים המחוברים לרענן את הקונפיג
     io.emit("config_refresh_required", { type: data.type });
   });
 
@@ -1110,10 +1108,13 @@ httpServer.listen(PORT, () => {
   console.log(`👻 STEALTH MODE enabled!`);
   console.log(`🚫 KEEP-AWAY MODE: ${KEEP_AWAY_RADIUS}px!`);
   console.log(`💬 CHAT BUBBLE SYNC enabled!`);
-  console.log(`⚡ Move Speed: 10 pixels/tick`);
-  console.log(`🎮 Game Loop: 20 FPS (50ms)`);
+  console.log(`🍩 Donut System Integration!`);
   console.log(`${"★".repeat(60)}\n`);
   
   // ========== DONUT SYSTEM INIT ==========
-  donutManager.initialize(io, BASE44_SERVICE_KEY, BASE44_API_URL);
+  if (donutManager && typeof donutManager.initialize === 'function') {
+      donutManager.initialize(io, BASE44_SERVICE_KEY, BASE44_API_URL);
+  } else {
+      console.error('❌ Donut Manager Initialize function NOT FOUND!');
+  }
 });
