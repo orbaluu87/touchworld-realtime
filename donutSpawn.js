@@ -1,48 +1,91 @@
-// donutSpawn.js
+// ============================================================================
+// Touch World - Donut Auto-Spawn System (Hanukkah Event)
+// Creates random donut spawns every X seconds for each area.
+// ============================================================================
+
+require("dotenv").config();
 const fetch = require("node-fetch");
 
-module.exports = {
-    async spawnRandomDonut(io, BASE44_API_URL, BASE44_SERVICE_KEY, area_id, templates) {
-        if (!templates || templates.length === 0) return null;
+// ---------- CONFIG ----------
+const SERVER_URL = process.env.SERVER_URL; // לדוגמה: https://touchworld-realtime.onrender.com
+const HEALTH_KEY = process.env.HEALTH_KEY;
 
-        // 🔥 בחירת טמפלט רנדומלי
-        const template = templates[Math.floor(Math.random() * templates.length)];
+// כל כמה זמן לייצר סופגניה (טווח רנדומלי)
+const MIN_INTERVAL = 6000;  // 6 שניות
+const MAX_INTERVAL = 10000; // 10 שניות
 
-        // 🔥 מיקום רנדומלי
-        const position_x = Math.floor(150 + Math.random() * 1000);
-        const position_y = Math.floor(200 + Math.random() * 500);
+// רשימת אזורים – אתה יכול לערוך
+const AREAS = [
+  "beach",
+  "hanukkah_square",
+  "city_center",
+  "winter_forest"
+];
 
-        // 🔥 יצירת מזהה ייחודי
-        const spawn_id = `donut_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-
-        // 🔥 שמירה ב־Base44
-        const response = await fetch(`${BASE44_API_URL}/entities/DonutSpawn`, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${BASE44_SERVICE_KEY}`,
-            },
-            body: JSON.stringify({
-                spawn_id,
-                area_id,
-                image_url: template.image_url,
-                scale: template.scale || 1,
-                collectible_type: template.collectible_type || "donut",
-                position_x,
-                position_y
-            })
-        });
-
-        const saved = await response.json();
-
-        // 🔥 שידור לכל השחקנים באזור
-        io.to(area_id).emit("donut_respawned", {
-            area_id,
-            spawn: saved
-        });
-
-        console.log(`🍩 Spawned new donut in area ${area_id}`);
-
-        return saved;
-    }
+// טווח מיקומים למפה (עורך אזורים → גודל איזור)
+const POSITION = {
+  minX: 100,
+  maxX: 1700,
+  minY: 100,
+  maxY: 900
 };
+
+// ---------- HELPERS ----------
+function randomInt(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function randomDelay() {
+  return randomInt(MIN_INTERVAL, MAX_INTERVAL);
+}
+
+function generateSpawn(areaId) {
+  return {
+    spawn_id: "donut_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
+    x: randomInt(POSITION.minX, POSITION.maxX),
+    y: randomInt(POSITION.minY, POSITION.maxY),
+    area_id: areaId,
+    created_at: Date.now()
+  };
+}
+
+// ---------- MAIN LOOP ----------
+async function spawnDonut(areaId) {
+  const spawn = generateSpawn(areaId);
+
+  console.log(`🍩 Spawning donut in ${areaId}: ${spawn.spawn_id} (${spawn.x}, ${spawn.y})`);
+
+  try {
+    await fetch(`${SERVER_URL}/broadcast-donut-respawn`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-health-key": HEALTH_KEY
+      },
+      body: JSON.stringify({
+        area_id: areaId,
+        spawn
+      })
+    });
+
+    console.log(`✅ Sent to server: donut_respawned → ${areaId}`);
+  } catch (err) {
+    console.error(`❌ Failed to notify server:`, err);
+  }
+}
+
+function scheduleNext(areaId) {
+  const delay = randomDelay();
+  setTimeout(async () => {
+    await spawnDonut(areaId);
+    scheduleNext(areaId);
+  }, delay);
+}
+
+// ---------- START ----------
+console.log("🍩 Donut Auto-Spawn System Started!");
+
+for (const area of AREAS) {
+  console.log(`➡ Starting auto-spawn for area: ${area}`);
+  scheduleNext(area);
+}
