@@ -5,8 +5,8 @@
 const fetch = require("node-fetch");
 
 const MAX_DONUTS_PER_AREA = 8;
-const MIN_INTERVAL = 10000; // 10 seconds
-const MAX_INTERVAL = 40000; // 40 seconds
+const MIN_INTERVAL = 2000; // 10 seconds
+const MAX_INTERVAL = 4000; // 40 seconds
 
 let BASE44_SERVICE_KEY;
 let BASE44_API_URL;
