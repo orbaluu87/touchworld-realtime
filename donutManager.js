@@ -145,4 +145,81 @@ async function maintainDonuts() {
                         area_id: area.area_id,
                         spawn_id: spawn.spawn_id,
                         collected_by_player_id: 'system'
- 
+                    });
+                }
+            }
+            continue;
+        }
+
+        // 3. Sync existing donuts with current configuration
+        // Delete donuts that don't match current templates (e.g. image changed in editor)
+        let currentValidCount = 0;
+        for (const spawn of areaSpawns) {
+            const isValid = templates.some(t => 
+                t.image_url === spawn.image_url && 
+                (t.name || 'donut') === spawn.collectible_type
+            );
+
+            if (!isValid) {
+                console.log(`🧹 Removing outdated donut ${spawn.spawn_id} from ${area.area_id}`);
+                await apiCall('/entities/DonutSpawn', 'DELETE', { id: spawn.id });
+                io.to(area.area_id).emit('donut_collected', {
+                    area_id: area.area_id,
+                    spawn_id: spawn.spawn_id,
+                    collected_by_player_id: 'system'
+                });
+            } else {
+                currentValidCount++;
+            }
+        }
+
+        // 4. Spawn new donuts if needed
+        if (currentValidCount < MAX_DONUTS_PER_AREA) {
+            await spawnDonutInArea(area, templates);
+        }
+    }
+}
+
+function initialize(socketIo, serviceKey, apiUrl) {
+    io = socketIo;
+    BASE44_SERVICE_KEY = serviceKey;
+    BASE44_API_URL = apiUrl;
+
+    console.log('🍩 Donut System Manager - Random Interval Mode Active');
+    
+    // Start the random loop
+    scheduleNextSpawn();
+}
+
+function scheduleNextSpawn() {
+    const delay = Math.floor(Math.random() * (MAX_INTERVAL - MIN_INTERVAL + 1)) + MIN_INTERVAL;
+    // console.log(`🍩 Next donut check in ${delay / 1000}s`);
+    
+    setTimeout(async () => {
+        await maintainDonuts();
+        scheduleNextSpawn();
+    }, delay);
+}
+
+function setupSocketHandlers(socket, players) {
+    // Handle real-time collection events
+    socket.on('client_collected_donut', (data) => {
+        const p = players.get(socket.id);
+        if (!p) return;
+
+        // Verify area match
+        if (p.current_area !== data.area_id) return;
+
+        // Broadcast removal to everyone in area
+        socket.to(p.current_area).emit('donut_collected', {
+            area_id: p.current_area,
+            spawn_id: data.spawn_id,
+            collected_by_player_id: p.playerId
+        });
+    });
+}
+
+module.exports = {
+    initialize,
+    setupSocketHandlers
+};
