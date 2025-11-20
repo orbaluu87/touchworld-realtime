@@ -118,7 +118,8 @@ function createDonutInMemory(area, templates) {
     const MAP_WIDTH = 1380;
     const MAP_HEIGHT = 770;
 
-    for (let i = 0; i < 20; i++) {
+    // Increased attempts to ensure we find a spot
+    for (let i = 0; i < 50; i++) {
         const x = PADDING + Math.floor(Math.random() * (MAP_WIDTH - (PADDING * 2)));
         const y = PADDING + Math.floor(Math.random() * (MAP_HEIGHT - (PADDING * 2)));
         
@@ -128,7 +129,7 @@ function createDonutInMemory(area, templates) {
         }
     }
 
-    if (!pos) return;
+    if (!pos) return false;
 
     // 3. Create Object
     const template = templates[Math.floor(Math.random() * templates.length)];
@@ -155,6 +156,8 @@ function createDonutInMemory(area, templates) {
         area_id: area.area_id,
         spawn: donutData
     });
+    
+    return true;
 }
 
 async function maintainDonuts() {
@@ -204,9 +207,12 @@ async function maintainDonuts() {
             }
         }
 
-        // Spawn if needed
-        if (areaSpawns.size < MAX_DONUTS_PER_AREA) {
-            createDonutInMemory(area, templates);
+        // Spawn if needed - Try to fill up faster (spawn up to 3 per tick)
+        let spawnedThisTick = 0;
+        while (areaSpawns.size < MAX_DONUTS_PER_AREA && spawnedThisTick < 3) {
+            const success = createDonutInMemory(area, templates);
+            if (!success) break; // Failed to place (collision?), stop for now
+            spawnedThisTick++;
         }
     }
 }
