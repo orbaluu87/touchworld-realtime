@@ -170,9 +170,13 @@ function createDonutInMemory(area, templates) {
 async function maintainDonuts() {
     // Fetch areas to know active configs
     const areas = await apiCall('/entities/Area');
-    if (!areas || !Array.isArray(areas)) return;
+    if (!areas || !Array.isArray(areas)) {
+        console.log('🍩 DonutManager: Failed to fetch areas or no areas found');
+        return;
+    }
 
     const activeAreas = areas.filter(a => a.is_active);
+    // console.log(`🍩 DonutManager: Checking ${activeAreas.length} active areas`);
 
     for (const area of activeAreas) {
         const areaSpawns = getAreaSpawns(area.area_id);
@@ -218,8 +222,14 @@ async function maintainDonuts() {
         let spawnedThisTick = 0;
         while (areaSpawns.size < MAX_DONUTS_PER_AREA && spawnedThisTick < 3) {
             const success = createDonutInMemory(area, templates);
-            if (!success) break; // Failed to place (collision?), stop for now
+            if (!success) {
+                console.log(`🍩 DonutManager: Failed to spawn in area ${area.area_id} (Collision? No space?)`);
+                break; 
+            }
             spawnedThisTick++;
+        }
+        if (spawnedThisTick > 0) {
+            console.log(`🍩 DonutManager: Spawned ${spawnedThisTick} donuts in ${area.area_id} (Total: ${areaSpawns.size})`);
         }
     }
 }
