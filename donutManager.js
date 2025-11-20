@@ -44,7 +44,7 @@ async function apiCall(endpoint, method = 'GET', body = null) {
 }
 
 // Helper to update user counter via API
-async function giveRewardToPlayer(playerId, collectibleType, collectibleName, imageUrl) {
+async function giveRewardToPlayer(playerId, username, collectibleType, collectibleName, imageUrl) {
     try {
         // We need to find if counter exists, then update or create
         // Since we are in a raw node process, we use the REST API
@@ -56,14 +56,21 @@ async function giveRewardToPlayer(playerId, collectibleType, collectibleName, im
         if (counters && counters.length > 0) {
             // Update
             const counter = counters[0];
+            // If username is missing in existing record, update it too
+            const updateData = { quantity: (counter.quantity || 0) + 1 };
+            if (!counter.username && username) {
+                updateData.username = username;
+            }
+
             await apiCall(`/entities/CollectibleCounter`, 'PATCH', {
                 query: { id: counter.id },
-                data: { quantity: (counter.quantity || 0) + 1 }
+                data: updateData
             });
         } else {
             // Create
             await apiCall('/entities/CollectibleCounter', 'POST', [{
                 player_id: playerId,
+                username: username,
                 collectible_type: collectibleType,
                 collectible_name: collectibleName,
                 collectible_image: imageUrl,
@@ -278,7 +285,7 @@ function setupSocketHandlers(socket, players) {
         });
 
         // Give Reward (Async)
-        await giveRewardToPlayer(p.playerId, donut.collectible_type, donut.collectible_name, donut.image_url);
+        await giveRewardToPlayer(p.playerId, p.username, donut.collectible_type, donut.collectible_name, donut.image_url);
         
         // Notify client specifically (so they can update counter UI)
         socket.emit('donut_collection_success', {
