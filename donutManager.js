@@ -44,7 +44,7 @@ async function apiCall(endpoint, method = 'GET', body = null) {
 }
 
 // Helper to update user counter via API
-async function giveRewardToPlayer(playerId, collectibleType, collectibleName, imageUrl) {
+async function giveRewardToPlayer(playerId, username, collectibleType, collectibleName, imageUrl) {
     try {
         // We need to find if counter exists, then update or create
         // Since we are in a raw node process, we use the REST API
@@ -58,12 +58,16 @@ async function giveRewardToPlayer(playerId, collectibleType, collectibleName, im
             const counter = counters[0];
             await apiCall(`/entities/CollectibleCounter`, 'PATCH', {
                 query: { id: counter.id },
-                data: { quantity: (counter.quantity || 0) + 1 }
+                data: { 
+                    quantity: (counter.quantity || 0) + 1,
+                    username: username // Keep username updated
+                }
             });
         } else {
             // Create
             await apiCall('/entities/CollectibleCounter', 'POST', [{
                 player_id: playerId,
+                username: username,
                 collectible_type: collectibleType,
                 collectible_name: collectibleName,
                 collectible_image: imageUrl,
@@ -118,8 +122,7 @@ function createDonutInMemory(area, templates) {
     const MAP_WIDTH = 1380;
     const MAP_HEIGHT = 770;
 
-    // Increased attempts to ensure we find a spot
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 20; i++) {
         const x = PADDING + Math.floor(Math.random() * (MAP_WIDTH - (PADDING * 2)));
         const y = PADDING + Math.floor(Math.random() * (MAP_HEIGHT - (PADDING * 2)));
         
@@ -129,7 +132,7 @@ function createDonutInMemory(area, templates) {
         }
     }
 
-    if (!pos) return false;
+    if (!pos) return;
 
     // 3. Create Object
     const template = templates[Math.floor(Math.random() * templates.length)];
@@ -156,8 +159,6 @@ function createDonutInMemory(area, templates) {
         area_id: area.area_id,
         spawn: donutData
     });
-    
-    return true;
 }
 
 async function maintainDonuts() {
@@ -207,12 +208,9 @@ async function maintainDonuts() {
             }
         }
 
-        // Spawn if needed - Try to fill up faster (spawn up to 3 per tick)
-        let spawnedThisTick = 0;
-        while (areaSpawns.size < MAX_DONUTS_PER_AREA && spawnedThisTick < 3) {
-            const success = createDonutInMemory(area, templates);
-            if (!success) break; // Failed to place (collision?), stop for now
-            spawnedThisTick++;
+        // Spawn if needed
+        if (areaSpawns.size < MAX_DONUTS_PER_AREA) {
+            createDonutInMemory(area, templates);
         }
     }
 }
@@ -278,7 +276,7 @@ function setupSocketHandlers(socket, players) {
         });
 
         // Give Reward (Async)
-        await giveRewardToPlayer(p.playerId, donut.collectible_type, donut.collectible_name, donut.image_url);
+        await giveRewardToPlayer(p.playerId, p.username, donut.collectible_type, donut.collectible_name, donut.image_url);
         
         // Notify client specifically (so they can update counter UI)
         socket.emit('donut_collection_success', {
