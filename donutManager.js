@@ -177,7 +177,7 @@ async function maintainDonuts() {
         }
 
         // 3. Sync existing donuts with current configuration
-        let validSpawns = [];
+        let currentValidCount = 0;
         for (const spawn of versionSpawns) {
             const isValid = templates.some(t => 
                 t.image_url === spawn.image_url && 
@@ -193,35 +193,12 @@ async function maintainDonuts() {
                     collected_by_player_id: 'system'
                 });
             } else {
-                validSpawns.push(spawn);
+                currentValidCount++;
             }
         }
 
-        // Recycling Logic: If full, remove the oldest to make room for new spawn (Living System)
-        if (validSpawns.length >= MAX_DONUTS_PER_AREA) {
-            // Sort by timestamp in spawn_id (donut_TIMESTAMP_random) - Oldest first
-            validSpawns.sort((a, b) => {
-                const timeA = parseInt(a.spawn_id.split('_')[1]) || 0;
-                const timeB = parseInt(b.spawn_id.split('_')[1]) || 0;
-                return timeA - timeB;
-            });
-
-            const oldest = validSpawns[0];
-            // console.log(`♻️ Recycling oldest donut ${oldest.spawn_id} in ${areaId} (${area.version_name})`);
-            
-            await apiCall('/entities/DonutSpawn', 'DELETE', { id: oldest.id });
-            io.to(areaId).emit('donut_collected', {
-                area_id: areaId,
-                spawn_id: oldest.spawn_id,
-                collected_by_player_id: 'system'
-            });
-
-            // Remove from local list so we spawn a new one immediately below
-            validSpawns.shift();
-        }
-
-        // 4. Spawn new donuts if needed (Always true if we recycled or weren't full)
-        if (validSpawns.length < MAX_DONUTS_PER_AREA) {
+        // 4. Spawn new donuts if needed
+        if (currentValidCount < MAX_DONUTS_PER_AREA) {
             await spawnDonutInArea(area, templates);
         }
     }
