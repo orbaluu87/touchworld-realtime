@@ -197,21 +197,8 @@ async function maintainDonuts() {
             }
         }
 
-        // 4. Wipe logic if reached 7
-        if (currentValidCount >= 7) {
-             console.log(`🧹 Cleaning up ALL ${currentValidCount} donuts from ${areaId} (LIMIT REACHED)`);
-             
-             // Delete all spawns for this area to restart
-             for (const spawn of versionSpawns) {
-                 await apiCall('/entities/DonutSpawn', 'DELETE', { id: spawn.id });
-                 io.to(areaId).emit('donut_collected', {
-                     area_id: areaId,
-                     spawn_id: spawn.spawn_id,
-                     collected_by_player_id: 'system_wipe'
-                 });
-             }
-        } else if (currentValidCount < MAX_DONUTS_PER_AREA) {
-            // Only spawn if not full (and not just wiped)
+        // 4. Spawn new donuts if needed
+        if (currentValidCount < MAX_DONUTS_PER_AREA) {
             await spawnDonutInArea(area, templates);
         }
     }
