@@ -44,7 +44,7 @@ async function apiCall(endpoint, method = 'GET', body = null) {
 }
 
 // Helper to update user counter via API
-async function giveRewardToPlayer(playerId, username, collectibleType, collectibleName, imageUrl) {
+async function giveRewardToPlayer(playerId, collectibleType, collectibleName, imageUrl) {
     try {
         // We need to find if counter exists, then update or create
         // Since we are in a raw node process, we use the REST API
@@ -56,27 +56,14 @@ async function giveRewardToPlayer(playerId, username, collectibleType, collectib
         if (counters && counters.length > 0) {
             // Update
             const counter = counters[0];
-            // If username is missing in existing record, update it too
-            const updateData = { quantity: (counter.quantity || 0) + 1 };
-            if (!counter.username && username) {
-                updateData.username = username;
-            }
-
-            console.log(`🍩 Updating counter ${counter.id} for ${username}:`, updateData);
-            
-            // Using direct resource URL for PATCH
-            const updateRes = await apiCall(`/entities/CollectibleCounter/${counter.id}`, 'PATCH', updateData);
-            
-            if (!updateRes) {
-                console.error(`🍩 Failed to update counter ${counter.id}. API returned null/error.`);
-            } else {
-                console.log(`🍩 Counter updated successfully.`);
-            }
+            await apiCall(`/entities/CollectibleCounter`, 'PATCH', {
+                query: { id: counter.id },
+                data: { quantity: (counter.quantity || 0) + 1 }
+            });
         } else {
             // Create
             await apiCall('/entities/CollectibleCounter', 'POST', [{
                 player_id: playerId,
-                username: username,
                 collectible_type: collectibleType,
                 collectible_name: collectibleName,
                 collectible_image: imageUrl,
@@ -174,33 +161,13 @@ function createDonutInMemory(area, templates) {
 }
 
 async function maintainDonuts() {
-    try {
-        // console.log('🍩 DonutManager: Heartbeat...');
-        
-        // Fetch ONLY active areas directly from DB to avoid pagination limits on inactive ones
-        const query = JSON.stringify({ is_active: true });
-        const activeAreas = await apiCall(`/entities/Area?query=${encodeURIComponent(query)}&limit=100`);
+    // Fetch areas to know active configs
+    const areas = await apiCall('/entities/Area');
+    if (!areas || !Array.isArray(areas)) return;
 
-        if (!activeAreas) {
-            console.log('🍩 DonutManager: Active areas response is null/undefined');
-            return;
-        }
+    const activeAreas = areas.filter(a => a.is_active);
 
-        // Handle potential paginated response if API changes
-        const areasList = Array.isArray(activeAreas) ? activeAreas : (activeAreas.items || []);
-        
-        if (!Array.isArray(areasList)) {
-            console.log('🍩 DonutManager: Invalid areas response structure:', typeof activeAreas);
-            return;
-        }
-
-        if (areasList.length === 0) {
-            // console.log('🍩 DonutManager: No active areas found.');
-            return;
-        }
-
-        for (const area of areasList) {
-            // console.log(`🍩 Inspecting Area: ${area.area_id} (${area.version_name})`);
+    for (const area of activeAreas) {
         const areaSpawns = getAreaSpawns(area.area_id);
         
         // Filter out spawns from old versions if version changed
@@ -244,18 +211,9 @@ async function maintainDonuts() {
         let spawnedThisTick = 0;
         while (areaSpawns.size < MAX_DONUTS_PER_AREA && spawnedThisTick < 3) {
             const success = createDonutInMemory(area, templates);
-            if (!success) {
-                console.log(`🍩 DonutManager: Failed to spawn in area ${area.area_id} (Collision? No space?)`);
-                break; 
-            }
+            if (!success) break; // Failed to place (collision?), stop for now
             spawnedThisTick++;
         }
-        if (spawnedThisTick > 0) {
-            console.log(`🍩 DonutManager: Spawned ${spawnedThisTick} donuts in ${area.area_id} (Total: ${areaSpawns.size})`);
-        }
-    }
-    } catch (err) {
-        console.error("🍩 DonutManager Error:", err);
     }
 }
 
@@ -274,11 +232,7 @@ function scheduleNextSpawn() {
     const delay = Math.floor(Math.random() * (MAX_INTERVAL - MIN_INTERVAL + 1)) + MIN_INTERVAL;
     
     setTimeout(async () => {
-        try {
-            await maintainDonuts();
-        } catch (err) {
-            console.error('🍩 DonutManager Loop Crash:', err);
-        }
+        await maintainDonuts();
         scheduleNextSpawn();
     }, delay);
 }
@@ -324,7 +278,7 @@ function setupSocketHandlers(socket, players) {
         });
 
         // Give Reward (Async)
-        await giveRewardToPlayer(p.playerId, p.username, donut.collectible_type, donut.collectible_name, donut.image_url);
+        await giveRewardToPlayer(p.playerId, donut.collectible_type, donut.collectible_name, donut.image_url);
         
         // Notify client specifically (so they can update counter UI)
         socket.emit('donut_collection_success', {
