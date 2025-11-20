@@ -5,8 +5,8 @@
 const fetch = require("node-fetch");
 
 const MAX_DONUTS_PER_AREA = 8;
-const MIN_INTERVAL = 10000; // 10 seconds
-const MAX_INTERVAL = 40000; // 40 seconds
+const MIN_INTERVAL = 2000; // 2 seconds
+const MAX_INTERVAL = 6000; // 6 seconds
 
 let BASE44_SERVICE_KEY;
 let BASE44_API_URL;
@@ -115,19 +115,16 @@ async function spawnDonutInArea(area, templates) {
 }
 
 async function maintainDonuts() {
-    const areas = await apiCall('/entities/Area');
+    // Fetch only ACTIVE areas with high limit to avoid pagination issues
+    const areas = await apiCall('/entities/Area?limit=1000&query=%7B%22is_active%22%3Atrue%7D');
     if (!areas || !Array.isArray(areas)) return;
 
-    const allSpawns = await apiCall('/entities/DonutSpawn') || [];
+    const allSpawns = await apiCall('/entities/DonutSpawn?limit=1000') || [];
 
-    // Group by area_id: ACTIVE areas take precedence.
-    // This ensures we don't process "Default" (active) AND "Hanukkah" (inactive) as separate valid configs for same area_id.
     const activeAreaConfig = new Map();
     
     for (const area of areas) {
-        if (area.is_active) {
-            activeAreaConfig.set(area.area_id, area);
-        }
+        activeAreaConfig.set(area.area_id, area);
     }
     
     // Identify all area_ids that need processing (active config OR existing spawns)
