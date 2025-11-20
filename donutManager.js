@@ -6,7 +6,7 @@ const fetch = require("node-fetch");
 
 const MAX_DONUTS_PER_AREA = 8;
 const MIN_INTERVAL = 2000; // 2 seconds
-const MAX_INTERVAL = 5000; // 5 seconds
+const MAX_INTERVAL = 6000; // 6 seconds
 
 let BASE44_SERVICE_KEY;
 let BASE44_API_URL;
@@ -44,7 +44,7 @@ async function apiCall(endpoint, method = 'GET', body = null) {
 }
 
 // Helper to update user counter via API
-async function giveRewardToPlayer(playerId, username, collectibleType, collectibleName, imageUrl) {
+async function giveRewardToPlayer(playerId, collectibleType, collectibleName, imageUrl) {
     try {
         // We need to find if counter exists, then update or create
         // Since we are in a raw node process, we use the REST API
@@ -58,16 +58,12 @@ async function giveRewardToPlayer(playerId, username, collectibleType, collectib
             const counter = counters[0];
             await apiCall(`/entities/CollectibleCounter`, 'PATCH', {
                 query: { id: counter.id },
-                data: { 
-                    quantity: (counter.quantity || 0) + 1,
-                    username: username // Keep username updated
-                }
+                data: { quantity: (counter.quantity || 0) + 1 }
             });
         } else {
             // Create
             await apiCall('/entities/CollectibleCounter', 'POST', [{
                 player_id: playerId,
-                username: username,
                 collectible_type: collectibleType,
                 collectible_name: collectibleName,
                 collectible_image: imageUrl,
@@ -155,6 +151,7 @@ function createDonutInMemory(area, templates) {
     areaSpawns.set(spawnId, donutData);
 
     // 5. Emit
+    console.log(`🍩 [Donut Spawned] Area: ${area.area_id} | Type: ${template.name || 'donut'} | Pos: (${donutData.position_x}, ${donutData.position_y})`);
     io.to(area.area_id).emit('donut_spawned', {
         area_id: area.area_id,
         spawn: donutData
@@ -276,7 +273,7 @@ function setupSocketHandlers(socket, players) {
         });
 
         // Give Reward (Async)
-        await giveRewardToPlayer(p.playerId, p.username, donut.collectible_type, donut.collectible_name, donut.image_url);
+        await giveRewardToPlayer(p.playerId, donut.collectible_type, donut.collectible_name, donut.image_url);
         
         // Notify client specifically (so they can update counter UI)
         socket.emit('donut_collection_success', {
