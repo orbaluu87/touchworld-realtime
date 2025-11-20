@@ -179,6 +179,12 @@ async function maintainDonuts() {
         // 3. Sync existing donuts with current configuration
         let currentValidCount = 0;
         for (const spawn of versionSpawns) {
+            // Cleanup: If marked collected but not deleted, remove it and don't count it
+            if (spawn.is_collected) {
+                await apiCall('/entities/DonutSpawn', 'DELETE', { id: spawn.id });
+                continue;
+            }
+
             const isValid = templates.some(t => 
                 t.image_url === spawn.image_url && 
                 (t.name || 'donut') === spawn.collectible_type
