@@ -174,19 +174,33 @@ function createDonutInMemory(area, templates) {
 }
 
 async function maintainDonuts() {
-    // Fetch ONLY active areas directly from DB to avoid pagination limits on inactive ones
-    const query = JSON.stringify({ is_active: true });
-    const activeAreas = await apiCall(`/entities/Area?query=${encodeURIComponent(query)}&limit=100`);
+    try {
+        // console.log('🍩 DonutManager: Heartbeat...');
+        
+        // Fetch ONLY active areas directly from DB to avoid pagination limits on inactive ones
+        const query = JSON.stringify({ is_active: true });
+        const activeAreas = await apiCall(`/entities/Area?query=${encodeURIComponent(query)}&limit=100`);
 
-    if (!activeAreas || !Array.isArray(activeAreas)) {
-        console.log('🍩 DonutManager: Failed to fetch active areas');
-        return;
-    }
+        if (!activeAreas) {
+            console.log('🍩 DonutManager: Active areas response is null/undefined');
+            return;
+        }
 
-    // console.log(`🍩 DonutManager: Checking ${activeAreas.length} active areas`);
+        // Handle potential paginated response if API changes
+        const areasList = Array.isArray(activeAreas) ? activeAreas : (activeAreas.items || []);
+        
+        if (!Array.isArray(areasList)) {
+            console.log('🍩 DonutManager: Invalid areas response structure:', typeof activeAreas);
+            return;
+        }
 
-    for (const area of activeAreas) {
-        console.log(`🍩 Inspecting Area: ${area.area_id} (${area.version_name})`);
+        if (areasList.length === 0) {
+            // console.log('🍩 DonutManager: No active areas found.');
+            return;
+        }
+
+        for (const area of areasList) {
+            // console.log(`🍩 Inspecting Area: ${area.area_id} (${area.version_name})`);
         const areaSpawns = getAreaSpawns(area.area_id);
         
         // Filter out spawns from old versions if version changed
@@ -257,7 +271,11 @@ function scheduleNextSpawn() {
     const delay = Math.floor(Math.random() * (MAX_INTERVAL - MIN_INTERVAL + 1)) + MIN_INTERVAL;
     
     setTimeout(async () => {
-        await maintainDonuts();
+        try {
+            await maintainDonuts();
+        } catch (err) {
+            console.error('🍩 DonutManager Loop Crash:', err);
+        }
         scheduleNextSpawn();
     }, delay);
 }
