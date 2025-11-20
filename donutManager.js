@@ -7,7 +7,6 @@ const fetch = require("node-fetch");
 const MAX_DONUTS_PER_AREA = 8;
 const MIN_INTERVAL = 2000; // 2 seconds
 const MAX_INTERVAL = 6000; // 6 seconds
-const DONUT_TTL = 5 * 60 * 1000; // 5 minutes
 
 let BASE44_SERVICE_KEY;
 let BASE44_API_URL;
@@ -101,7 +100,9 @@ async function spawnDonutInArea(area, templates) {
         position_y: Math.round(pos.y),
         image_url: template.image_url,
         scale: template.scale || 1,
-        is_collected: false
+        is_collected: false,
+        spawned_at: new Date().toISOString(),
+        respawn_at: null
     };
 
     const created = await apiCall('/entities/DonutSpawn', 'POST', spawnData);
@@ -179,26 +180,31 @@ async function maintainDonuts() {
 
         // 3. Sync existing donuts with current configuration
         let currentValidCount = 0;
-        const now = Date.now();
+        const now = new Date();
 
         for (const spawn of versionSpawns) {
-            // Cleanup 1: If marked collected but not deleted
+            // 3a. Cleanup Collected: If marked collected, remove it so new ones can spawn.
             if (spawn.is_collected) {
+                // Deleting collected donut to clear the slot (as requested: "allow system to spawn more")
+                // We keep it briefly if needed, but here we clean up on the next tick.
                 await apiCall('/entities/DonutSpawn', 'DELETE', { id: spawn.id });
-                continue;
+                continue; // Don't count towards valid count
             }
 
-            // Cleanup 2: TTL - Remove old donuts (stuck/zombies) to free up space
-            const createdTime = new Date(spawn.created_date).getTime();
-            if (now - createdTime > DONUT_TTL) {
-                console.log(`⌛ Donut expired (TTL): ${spawn.spawn_id}`);
-                await apiCall('/entities/DonutSpawn', 'DELETE', { id: spawn.id });
-                io.to(areaId).emit('donut_collected', {
-                    area_id: areaId,
-                    spawn_id: spawn.spawn_id,
-                    collected_by_player_id: 'system_ttl'
-                });
-                continue;
+            // 3b. Cleanup Old Uncollected: If older than 60 seconds, delete to refresh
+            if (spawn.spawned_at) {
+                const spawnTime = new Date(spawn.spawned_at);
+                const ageSeconds = (now - spawnTime) / 1000;
+                if (ageSeconds > 60) { // 60 seconds lifetime for uncollected
+                    console.log(`⌛ Donut ${spawn.spawn_id} expired (${Math.round(ageSeconds)}s). Deleting.`);
+                    await apiCall('/entities/DonutSpawn', 'DELETE', { id: spawn.id });
+                    io.to(areaId).emit('donut_collected', {
+                        area_id: areaId,
+                        spawn_id: spawn.spawn_id,
+                        collected_by_player_id: 'system_timeout'
+                    });
+                    continue; // Don't count
+                }
             }
 
             const isValid = templates.some(t => 
