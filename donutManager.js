@@ -7,6 +7,7 @@ const fetch = require("node-fetch");
 const MAX_DONUTS_PER_AREA = 8;
 const MIN_INTERVAL = 2000; // 2 seconds
 const MAX_INTERVAL = 6000; // 6 seconds
+const DONUT_TTL = 5 * 60 * 1000; // 5 minutes
 
 let BASE44_SERVICE_KEY;
 let BASE44_API_URL;
@@ -178,10 +179,25 @@ async function maintainDonuts() {
 
         // 3. Sync existing donuts with current configuration
         let currentValidCount = 0;
+        const now = Date.now();
+
         for (const spawn of versionSpawns) {
-            // Cleanup: If marked collected but not deleted, remove it and don't count it
+            // Cleanup 1: If marked collected but not deleted
             if (spawn.is_collected) {
                 await apiCall('/entities/DonutSpawn', 'DELETE', { id: spawn.id });
+                continue;
+            }
+
+            // Cleanup 2: TTL - Remove old donuts (stuck/zombies) to free up space
+            const createdTime = new Date(spawn.created_date).getTime();
+            if (now - createdTime > DONUT_TTL) {
+                console.log(`⌛ Donut expired (TTL): ${spawn.spawn_id}`);
+                await apiCall('/entities/DonutSpawn', 'DELETE', { id: spawn.id });
+                io.to(areaId).emit('donut_collected', {
+                    area_id: areaId,
+                    spawn_id: spawn.spawn_id,
+                    collected_by_player_id: 'system_ttl'
+                });
                 continue;
             }
 
