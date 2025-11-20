@@ -62,10 +62,16 @@ async function giveRewardToPlayer(playerId, username, collectibleType, collectib
                 updateData.username = username;
             }
 
-            await apiCall(`/entities/CollectibleCounter`, 'PATCH', {
-                query: { id: counter.id },
-                data: updateData
-            });
+            console.log(`🍩 Updating counter ${counter.id} for ${username}:`, updateData);
+            
+            // Using direct resource URL for PATCH
+            const updateRes = await apiCall(`/entities/CollectibleCounter/${counter.id}`, 'PATCH', updateData);
+            
+            if (!updateRes) {
+                console.error(`🍩 Failed to update counter ${counter.id}. API returned null/error.`);
+            } else {
+                console.log(`🍩 Counter updated successfully.`);
+            }
         } else {
             // Create
             await apiCall('/entities/CollectibleCounter', 'POST', [{
@@ -168,17 +174,19 @@ function createDonutInMemory(area, templates) {
 }
 
 async function maintainDonuts() {
-    // Fetch areas to know active configs
-    const areas = await apiCall('/entities/Area');
-    if (!areas || !Array.isArray(areas)) {
-        console.log('🍩 DonutManager: Failed to fetch areas or no areas found');
+    // Fetch ONLY active areas directly from DB to avoid pagination limits on inactive ones
+    const query = JSON.stringify({ is_active: true });
+    const activeAreas = await apiCall(`/entities/Area?query=${encodeURIComponent(query)}&limit=100`);
+
+    if (!activeAreas || !Array.isArray(activeAreas)) {
+        console.log('🍩 DonutManager: Failed to fetch active areas');
         return;
     }
 
-    const activeAreas = areas.filter(a => a.is_active);
     // console.log(`🍩 DonutManager: Checking ${activeAreas.length} active areas`);
 
     for (const area of activeAreas) {
+        console.log(`🍩 Inspecting Area: ${area.area_id} (${area.version_name})`);
         const areaSpawns = getAreaSpawns(area.area_id);
         
         // Filter out spawns from old versions if version changed
