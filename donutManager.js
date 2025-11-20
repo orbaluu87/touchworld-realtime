@@ -115,16 +115,19 @@ async function spawnDonutInArea(area, templates) {
 }
 
 async function maintainDonuts() {
-    // Fetch only ACTIVE areas with high limit to avoid pagination issues
-    const areas = await apiCall('/entities/Area?limit=1000&query=%7B%22is_active%22%3Atrue%7D');
+    const areas = await apiCall('/entities/Area');
     if (!areas || !Array.isArray(areas)) return;
 
-    const allSpawns = await apiCall('/entities/DonutSpawn?limit=1000') || [];
+    const allSpawns = await apiCall('/entities/DonutSpawn') || [];
 
+    // Group by area_id: ACTIVE areas take precedence.
+    // This ensures we don't process "Default" (active) AND "Hanukkah" (inactive) as separate valid configs for same area_id.
     const activeAreaConfig = new Map();
     
     for (const area of areas) {
-        activeAreaConfig.set(area.area_id, area);
+        if (area.is_active) {
+            activeAreaConfig.set(area.area_id, area);
+        }
     }
     
     // Identify all area_ids that need processing (active config OR existing spawns)
