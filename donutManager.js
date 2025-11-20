@@ -254,6 +254,9 @@ async function maintainDonuts() {
             console.log(`🍩 DonutManager: Spawned ${spawnedThisTick} donuts in ${area.area_id} (Total: ${areaSpawns.size})`);
         }
     }
+    } catch (err) {
+        console.error("🍩 DonutManager Error:", err);
+    }
 }
 
 function initialize(socketIo, serviceKey, apiUrl) {
