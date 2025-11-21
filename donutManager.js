@@ -12,8 +12,8 @@ let apiUrl = null;
 
 // Constants
 const MAX_DONUTS_PER_AREA = 30;
-const MIN_INTERVAL = 10000;
-const MAX_INTERVAL = 40000;
+const MIN_INTERVAL = 10000; // 10 seconds
+const MAX_INTERVAL = 20000; // 20 seconds
 
 // --- Public API ---
 
@@ -72,9 +72,15 @@ async function tick() {
     if (!ioRef) return;
 
     try {
+        console.log("🍩 [DONUT LOG] Tick started... fetching areas");
         // 1. Fetch Active Areas (We need config for positions/types)
         const areas = await fetchEntities('Area', { is_active: true });
-        if (!areas || areas.length === 0) return;
+        if (!areas || areas.length === 0) {
+            console.log("🍩 [DONUT LOG] No active areas found");
+            return;
+        }
+
+        console.log(`🍩 [DONUT LOG] Processing ${areas.length} active areas`);
 
         // 2. Process each area
         for (const area of areas) {
@@ -141,7 +147,7 @@ function spawnDonut(area, templates) {
         ioRef.to(area.id).emit('donut_spawned', donut);
     }
     
-    console.log(`🍩 Spawned in ${area.area_id}: ${spawnId}`);
+    console.log(`🍩 [DONUT LOG] Spawned new donut in ${area.area_id} (Version: ${area.version_name || 'unknown'}). Type: ${donut.collectible_type}. Total in area: ${getDonutsForArea(area.area_id).length}`);
 }
 
 async function rewardPlayer(playerId, donut) {
