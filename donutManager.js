@@ -107,10 +107,20 @@ async function spawnDonutInArea(area, templates) {
 
     if (created) {
         console.log(`🍩 New Donut: ${area.area_id} (${area.version_name}) (${created.position_x},${created.position_y})`);
+        
+        // Broadcast to main area room (legacy)
         io.to(area.area_id).emit('donut_spawned', {
             area_id: area.area_id,
             spawn: created
         });
+
+        // Broadcast to specific version room (UUID) if exists
+        if (area.id && area.id !== area.area_id) {
+            io.to(area.id).emit('donut_spawned', {
+                area_id: area.area_id,
+                spawn: created
+            });
+        }
     }
 }
 
@@ -166,11 +176,17 @@ async function maintainDonuts() {
                 console.log(`🧹 Cleaning up ${versionSpawns.length} donuts from ${areaId} version ${area.version_name} (system removed)`);
                 for (const spawn of versionSpawns) {
                     await apiCall('/entities/DonutSpawn', 'DELETE', { id: spawn.id });
-                    io.to(areaId).emit('donut_collected', {
+                    
+                    const payload = {
                         area_id: areaId,
                         spawn_id: spawn.spawn_id,
                         collected_by_player_id: 'system'
-                    });
+                    };
+                    
+                    io.to(areaId).emit('donut_collected', payload);
+                    if (area.id && area.id !== areaId) {
+                        io.to(area.id).emit('donut_collected', payload);
+                    }
                 }
             }
             continue;
@@ -193,11 +209,17 @@ async function maintainDonuts() {
             if (!isValid) {
                 console.log(`🧹 Removing outdated donut ${spawn.spawn_id} from ${areaId} version ${area.version_name}`);
                 await apiCall('/entities/DonutSpawn', 'DELETE', { id: spawn.id });
-                io.to(areaId).emit('donut_collected', {
+                
+                const payload = {
                     area_id: areaId,
                     spawn_id: spawn.spawn_id,
                     collected_by_player_id: 'system'
-                });
+                };
+
+                io.to(areaId).emit('donut_collected', payload);
+                if (area.id && area.id !== areaId) {
+                    io.to(area.id).emit('donut_collected', payload);
+                }
             } else {
                 currentValidCount++;
             }
@@ -245,7 +267,7 @@ function setupSocketHandlers(socket, players) {
 
         // Broadcast removal to everyone in area
         socket.to(p.current_area).emit('donut_collected', {
-            area_id: p.current_area,
+            area_id: data.area_id, // Use the area_id from the event data to match client expectation
             spawn_id: data.spawn_id,
             collected_by_player_id: p.playerId
         });
