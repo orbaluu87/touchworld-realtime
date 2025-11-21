@@ -1,5 +1,5 @@
 // ============================================================================
-// DONUT SYSTEM MANAGER (In-Memory & Fast)
+// DONUT SYSTEM MANAGER (Simplified & Robust)
 // ============================================================================
 
 const fetch = require("node-fetch");
@@ -11,10 +11,6 @@ const MAX_INTERVAL = 6000; // 6 seconds
 let BASE44_SERVICE_KEY;
 let BASE44_API_URL;
 let io;
-
-// IN-MEMORY STORAGE
-// Map<area_id, Map<spawn_id, donut_data>>
-const activeSpawns = new Map();
 
 // --- Helper Functions ---
 
@@ -32,48 +28,15 @@ async function apiCall(endpoint, method = 'GET', body = null) {
         
         const res = await fetch(url, options);
         if (!res.ok) {
+            // Handle 404s silently if needed
             if (res.status === 404) return null;
-            // Ignore errors silently to keep log clean
-            return null; 
+            const text = await res.text();
+            throw new Error(`API Error ${res.status}: ${text}`);
         }
         return await res.json();
     } catch (err) {
-        console.error(`❌ API Error [${endpoint}]:`, err.message);
+        console.error(`❌ DonutManager API Error [${endpoint}]:`, err.message);
         return null;
-    }
-}
-
-// Helper to update user counter via API
-async function giveRewardToPlayer(playerId, collectibleType, collectibleName, imageUrl) {
-    try {
-        // We need to find if counter exists, then update or create
-        // Since we are in a raw node process, we use the REST API
-        
-        // 1. List counters for player & type
-        const query = JSON.stringify({ player_id: playerId, collectible_type: collectibleType });
-        const counters = await apiCall(`/entities/CollectibleCounter?query=${encodeURIComponent(query)}`);
-        
-        if (counters && counters.length > 0) {
-            // Update
-            const counter = counters[0];
-            await apiCall(`/entities/CollectibleCounter`, 'PATCH', {
-                query: { id: counter.id },
-                data: { quantity: (counter.quantity || 0) + 1 }
-            });
-        } else {
-            // Create
-            await apiCall('/entities/CollectibleCounter', 'POST', [{
-                player_id: playerId,
-                collectible_type: collectibleType,
-                collectible_name: collectibleName,
-                collectible_image: imageUrl,
-                quantity: 1
-            }]);
-        }
-        return true;
-    } catch (err) {
-        console.error("Error giving reward:", err);
-        return false;
     }
 }
 
@@ -82,6 +45,7 @@ function isPositionBlocked(x, y, collisionMap) {
     
     for (const shape of collisionMap) {
         if (!shape) continue;
+        
         if (typeof shape.x === 'number' && typeof shape.y === 'number' && 
             typeof shape.width === 'number' && typeof shape.height === 'number') {
             
@@ -94,17 +58,10 @@ function isPositionBlocked(x, y, collisionMap) {
     return false;
 }
 
-function getAreaSpawns(areaId) {
-    if (!activeSpawns.has(areaId)) {
-        activeSpawns.set(areaId, new Map());
-    }
-    return activeSpawns.get(areaId);
-}
+async function spawnDonutInArea(area, templates) {
+    if (!templates || templates.length === 0) return;
 
-function createDonutInMemory(area, templates) {
-    const areaSpawns = getAreaSpawns(area.area_id);
-    
-    // 1. Get collision map
+    // 2. Get collision map
     let collisionMap = [];
     try {
         if (area.collision_map) {
@@ -112,7 +69,7 @@ function createDonutInMemory(area, templates) {
         }
     } catch (e) {}
 
-    // 2. Find position
+    // 3. Find position
     let pos = null;
     const PADDING = 100;
     const MAP_WIDTH = 1380;
@@ -130,52 +87,64 @@ function createDonutInMemory(area, templates) {
 
     if (!pos) return;
 
-    // 3. Create Object
+    // 4. Create
     const template = templates[Math.floor(Math.random() * templates.length)];
-    const spawnId = `donut_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
     
-    const donutData = {
+    const spawnData = {
         area_id: area.area_id,
         version_name: area.version_name,
-        spawn_id: spawnId,
+        spawn_id: `donut_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
         collectible_type: template.name || 'donut',
         collectible_name: template.name || 'donut',
         position_x: Math.round(pos.x),
         position_y: Math.round(pos.y),
         image_url: template.image_url,
         scale: template.scale || 1,
-        created_at: Date.now()
+        is_collected: false
     };
 
-    // 4. Save to Memory
-    areaSpawns.set(spawnId, donutData);
+    const created = await apiCall('/entities/DonutSpawn', 'POST', spawnData);
 
-    // 5. Emit
-    console.log(`🍩 [Donut Spawned] Area: ${area.area_id} | Type: ${template.name || 'donut'} | Pos: (${donutData.position_x}, ${donutData.position_y})`);
-    io.to(area.area_id).emit('donut_spawned', {
-        area_id: area.area_id,
-        spawn: donutData
-    });
+    if (created) {
+        console.log(`🍩 New Donut: ${area.area_id} (${area.version_name}) (${created.position_x},${created.position_y})`);
+        io.to(area.area_id).emit('donut_spawned', {
+            area_id: area.area_id,
+            spawn: created
+        });
+    }
 }
 
 async function maintainDonuts() {
-    // Fetch areas to know active configs
     const areas = await apiCall('/entities/Area');
     if (!areas || !Array.isArray(areas)) return;
 
-    const activeAreas = areas.filter(a => a.is_active);
+    const allSpawns = await apiCall('/entities/DonutSpawn') || [];
 
-    for (const area of activeAreas) {
-        const areaSpawns = getAreaSpawns(area.area_id);
-        
-        // Filter out spawns from old versions if version changed
-        for (const [id, donut] of areaSpawns.entries()) {
-            if (donut.version_name !== area.version_name) {
-                areaSpawns.delete(id);
-            }
+    // Group by area_id: ACTIVE areas take precedence.
+    // This ensures we don't process "Default" (active) AND "Hanukkah" (inactive) as separate valid configs for same area_id.
+    const activeAreaConfig = new Map();
+    
+    for (const area of areas) {
+        if (area.is_active) {
+            activeAreaConfig.set(area.area_id, area);
         }
+    }
+    
+    // Identify all area_ids that need processing (active config OR existing spawns)
+    const areaIdsToProcess = new Set([
+        ...activeAreaConfig.keys(),
+        ...allSpawns.map(s => s.area_id)
+    ]);
 
-        // Get templates
+    for (const areaId of areaIdsToProcess) {
+        const area = activeAreaConfig.get(areaId);
+        
+        // If no active area config found, skip (don't crash, and don't delete donuts from inactive versions)
+        if (!area) continue;
+
+        const areaSpawns = allSpawns.filter(s => s.area_id === areaId);
+
+        // 1. Parse templates (only if we have an active area config)
         let templates = [];
         try {
             if (area.decorations) {
@@ -184,30 +153,59 @@ async function maintainDonuts() {
                     templates = decos.filter(d => d.action_type === 'donut_system');
                 }
             }
-        } catch (e) {}
+        } catch (e) {
+            console.error(`Error parsing decorations for area ${area.area_id}`, e);
+        }
 
+        // Filter spawns for THIS version
+        const versionSpawns = areaSpawns.filter(s => s.version_name === area.version_name);
+
+        // 2. If no system found (active area but no templates) -> DELETE donuts for this version
         if (templates.length === 0) {
-            // No system in this area version, clear memory
-            if (areaSpawns.size > 0) areaSpawns.clear();
+            if (versionSpawns.length > 0) {
+                console.log(`🧹 Cleaning up ${versionSpawns.length} donuts from ${areaId} version ${area.version_name} (system removed)`);
+                for (const spawn of versionSpawns) {
+                    await apiCall('/entities/DonutSpawn', 'DELETE', { id: spawn.id });
+                    io.to(areaId).emit('donut_collected', {
+                        area_id: areaId,
+                        spawn_id: spawn.spawn_id,
+                        collected_by_player_id: 'system'
+                    });
+                }
+            }
             continue;
         }
 
-        // Clean up old donuts (older than 5 minutes)
-        const now = Date.now();
-        for (const [id, donut] of areaSpawns.entries()) {
-            if (now - donut.created_at > 5 * 60 * 1000) {
-                areaSpawns.delete(id);
-                io.to(area.area_id).emit('donut_collected', {
-                    area_id: area.area_id,
-                    spawn_id: id,
-                    collected_by_player_id: 'system_timeout'
+        // 3. Sync existing donuts with current configuration
+        let currentValidCount = 0;
+        for (const spawn of versionSpawns) {
+            // Cleanup: If marked collected but not deleted, remove it and don't count it
+            if (spawn.is_collected) {
+                await apiCall('/entities/DonutSpawn', 'DELETE', { id: spawn.id });
+                continue;
+            }
+
+            const isValid = templates.some(t => 
+                t.image_url === spawn.image_url && 
+                (t.name || 'donut') === spawn.collectible_type
+            );
+
+            if (!isValid) {
+                console.log(`🧹 Removing outdated donut ${spawn.spawn_id} from ${areaId} version ${area.version_name}`);
+                await apiCall('/entities/DonutSpawn', 'DELETE', { id: spawn.id });
+                io.to(areaId).emit('donut_collected', {
+                    area_id: areaId,
+                    spawn_id: spawn.spawn_id,
+                    collected_by_player_id: 'system'
                 });
+            } else {
+                currentValidCount++;
             }
         }
 
-        // Spawn if needed
-        if (areaSpawns.size < MAX_DONUTS_PER_AREA) {
-            createDonutInMemory(area, templates);
+        // 4. Spawn new donuts if needed
+        if (currentValidCount < MAX_DONUTS_PER_AREA) {
+            await spawnDonutInArea(area, templates);
         }
     }
 }
@@ -217,9 +215,9 @@ function initialize(socketIo, serviceKey, apiUrl) {
     BASE44_SERVICE_KEY = serviceKey;
     BASE44_API_URL = apiUrl;
 
-    console.log('🍩 In-Memory Donut System Active');
+    console.log('🍩 Donut System Manager - Random Interval Mode Active');
     
-    // Start loop
+    // Start the random loop
     scheduleNextSpawn();
 }
 
@@ -227,58 +225,29 @@ function scheduleNextSpawn() {
     const delay = Math.floor(Math.random() * (MAX_INTERVAL - MIN_INTERVAL + 1)) + MIN_INTERVAL;
     
     setTimeout(async () => {
-        await maintainDonuts();
+        try {
+            await maintainDonuts();
+        } catch (err) {
+            console.error("❌ Error in donut maintenance loop:", err);
+        }
         scheduleNextSpawn();
     }, delay);
 }
 
 function setupSocketHandlers(socket, players) {
-    // 1. Sync on Join
-    // When a player enters an area, send them all current donuts
-    socket.on('request_area_donuts', (areaId) => {
-        if (activeSpawns.has(areaId)) {
-            const donuts = Array.from(activeSpawns.get(areaId).values());
-            donuts.forEach(d => {
-                socket.emit('donut_spawned', { area_id: areaId, spawn: d });
-            });
-        }
-    });
-
-    // 2. Handle Collection
-    socket.on('client_try_collect_donut', async (data) => {
+    // Handle real-time collection events
+    socket.on('client_collected_donut', (data) => {
         const p = players.get(socket.id);
         if (!p) return;
 
-        const { spawn_id, area_id } = data;
-        
-        // Validation
-        if (p.current_area !== area_id) return; // Player not in area
-        
-        const areaSpawns = activeSpawns.get(area_id);
-        if (!areaSpawns || !areaSpawns.has(spawn_id)) {
-            // Donut doesn't exist or already taken
-            return;
-        }
+        // Verify area match
+        if (p.current_area !== data.area_id) return;
 
-        const donut = areaSpawns.get(spawn_id);
-
-        // DELETE FIRST (Race condition prevention)
-        areaSpawns.delete(spawn_id);
-
-        // Broadcast immediately
-        io.to(area_id).emit('donut_collected', {
-            area_id: area_id,
-            spawn_id: spawn_id,
+        // Broadcast removal to everyone in area
+        socket.to(p.current_area).emit('donut_collected', {
+            area_id: p.current_area,
+            spawn_id: data.spawn_id,
             collected_by_player_id: p.playerId
-        });
-
-        // Give Reward (Async)
-        await giveRewardToPlayer(p.playerId, donut.collectible_type, donut.collectible_name, donut.image_url);
-        
-        // Notify client specifically (so they can update counter UI)
-        socket.emit('donut_collection_success', {
-            collectible_type: donut.collectible_type,
-            quantity_added: 1
         });
     });
 }
