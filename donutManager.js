@@ -4,13 +4,27 @@
 
 const fetch = require("node-fetch");
 
-const MAX_DONUTS_PER_AREA = 8;
+const MAX_DONUTS_PER_AREA = 50;
 const MIN_INTERVAL = 2000; // 2 seconds
 const MAX_INTERVAL = 6000; // 6 seconds
 
 let BASE44_SERVICE_KEY;
 let BASE44_API_URL;
 let io;
+
+// IN-MEMORY STORAGE (No DB persistence for spawns)
+const ACTIVE_DONUTS = new Map(); // spawn_id -> donut object
+
+// Export for server usage
+module.exports.getDonutsForArea = (areaId) => {
+    const list = [];
+    for (const donut of ACTIVE_DONUTS.values()) {
+        if (donut.area_id === areaId) {
+            list.push(donut);
+        }
+    }
+    return list;
+};
 
 // --- Helper Functions ---
 
@@ -87,40 +101,45 @@ async function spawnDonutInArea(area, templates) {
 
     if (!pos) return;
 
-    // 4. Create
+    // 4. Create IN MEMORY
     const template = templates[Math.floor(Math.random() * templates.length)];
-    
+
     const spawnData = {
-        area_id: area.area_id,
-        version_name: area.version_name,
-        spawn_id: `donut_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
-        collectible_type: template.name || 'donut',
-        collectible_name: template.name || 'donut',
-        position_x: Math.round(pos.x),
-        position_y: Math.round(pos.y),
-        image_url: template.image_url,
-        scale: template.scale || 1,
-        is_collected: false
+    area_id: area.area_id,
+    version_name: area.version_name,
+    spawn_id: `donut_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+    collectible_type: template.name || 'donut',
+    collectible_name: template.name || 'donut',
+    position_x: Math.round(pos.x),
+    position_y: Math.round(pos.y),
+    image_url: template.image_url,
+    scale: template.scale || 1,
+    created_at: Date.now()
     };
 
-    const created = await apiCall('/entities/DonutSpawn', 'POST', spawnData);
+    ACTIVE_DONUTS.set(spawnData.spawn_id, spawnData);
 
-    if (created) {
-        console.log(`🍩 New Donut: ${area.area_id} (${area.version_name}) (${created.position_x},${created.position_y})`);
-        
-        // Broadcast to main area room (legacy)
-        io.to(area.area_id).emit('donut_spawned', {
-            area_id: area.area_id,
-            spawn: created
-        });
+    console.log(`🍩 [SPAWN] Area: ${area.area_id} | Type: ${spawnData.collectible_type} | Pos: (${spawnData.position_x}, ${spawnData.position_y})`);
 
-        // Broadcast to specific version room (UUID) if exists
-        if (area.id && area.id !== area.area_id) {
-            io.to(area.id).emit('donut_spawned', {
-                area_id: area.area_id,
-                spawn: created
-            });
-        }
+    const payload = { 
+    area_id: area.area_id, 
+    spawn: spawnData 
+    };
+
+    const cache = module.exports.areaRoomsCache;
+
+    // Broadcast to all linked rooms
+    if (cache && cache.has(area.area_id)) {
+    const rooms = cache.get(area.area_id);
+    for (const room of rooms) {
+        io.to(room).emit('donut_spawned', payload);
+    }
+    } else {
+    // Fallback
+    io.to(area.area_id).emit('donut_spawned', payload);
+    if (area.id && area.id !== area.area_id) {
+        io.to(area.id).emit('donut_spawned', payload);
+    }
     }
 }
 
@@ -128,10 +147,7 @@ async function maintainDonuts() {
     const areas = await apiCall('/entities/Area');
     if (!areas || !Array.isArray(areas)) return;
 
-    const allSpawns = await apiCall('/entities/DonutSpawn') || [];
-
     // Group by area_id: ACTIVE areas take precedence.
-    // This ensures we don't process "Default" (active) AND "Hanukkah" (inactive) as separate valid configs for same area_id.
     const activeAreaConfig = new Map();
     
     for (const area of areas) {
@@ -140,21 +156,24 @@ async function maintainDonuts() {
         }
     }
     
-    // Identify all area_ids that need processing (active config OR existing spawns)
-    const areaIdsToProcess = new Set([
-        ...activeAreaConfig.keys(),
-        ...allSpawns.map(s => s.area_id)
-    ]);
+    // Populate cache for broadcasting (Bidirectional mapping)
+    if (activeAreaConfig.size > 0) {
+        const newCache = new Map();
+        for (const area of activeAreaConfig.values()) {
+            const rooms = [area.area_id];
+            if (area.id && area.id !== area.area_id) {
+                rooms.push(area.id);
+            }
+            
+            for (const roomId of rooms) {
+                newCache.set(roomId, rooms);
+            }
+        }
+        module.exports.areaRoomsCache = newCache;
+    }
 
-    for (const areaId of areaIdsToProcess) {
-        const area = activeAreaConfig.get(areaId);
-        
-        // If no active area config found, skip (don't crash, and don't delete donuts from inactive versions)
-        if (!area) continue;
-
-        const areaSpawns = allSpawns.filter(s => s.area_id === areaId);
-
-        // 1. Parse templates (only if we have an active area config)
+    for (const [areaId, area] of activeAreaConfig.entries()) {
+        // 1. Parse templates
         let templates = [];
         try {
             if (area.decorations) {
@@ -167,68 +186,43 @@ async function maintainDonuts() {
             console.error(`Error parsing decorations for area ${area.area_id}`, e);
         }
 
-        // Filter spawns for THIS version
-        const versionSpawns = areaSpawns.filter(s => s.version_name === area.version_name);
+        if (templates.length === 0) continue;
 
-        // 2. If no system found (active area but no templates) -> DELETE donuts for this version
-        if (templates.length === 0) {
-            if (versionSpawns.length > 0) {
-                console.log(`🧹 Cleaning up ${versionSpawns.length} donuts from ${areaId} version ${area.version_name} (system removed)`);
-                for (const spawn of versionSpawns) {
-                    await apiCall('/entities/DonutSpawn', 'DELETE', { id: spawn.id });
-                    
-                    const payload = {
-                        area_id: areaId,
-                        spawn_id: spawn.spawn_id,
-                        collected_by_player_id: 'system'
-                    };
-                    
-                    io.to(areaId).emit('donut_collected', payload);
-                    if (area.id && area.id !== areaId) {
-                        io.to(area.id).emit('donut_collected', payload);
-                    }
-                }
-            }
-            continue;
+        // 2. Get current donuts from MEMORY
+        const areaDonuts = [];
+        for (const d of ACTIVE_DONUTS.values()) {
+            if (d.area_id === areaId) areaDonuts.push(d);
         }
-
-        // 3. Sync existing donuts with current configuration
-        let currentValidCount = 0;
-        for (const spawn of versionSpawns) {
-            // Cleanup: If marked collected but not deleted, remove it and don't count it
-            if (spawn.is_collected) {
-                await apiCall('/entities/DonutSpawn', 'DELETE', { id: spawn.id });
-                continue;
-            }
-
-            const isValid = templates.some(t => 
-                t.image_url === spawn.image_url && 
-                (t.name || 'donut') === spawn.collectible_type
-            );
-
-            if (!isValid) {
-                console.log(`🧹 Removing outdated donut ${spawn.spawn_id} from ${areaId} version ${area.version_name}`);
-                await apiCall('/entities/DonutSpawn', 'DELETE', { id: spawn.id });
-                
-                const payload = {
-                    area_id: areaId,
-                    spawn_id: spawn.spawn_id,
-                    collected_by_player_id: 'system'
-                };
-
-                io.to(areaId).emit('donut_collected', payload);
-                if (area.id && area.id !== areaId) {
-                    io.to(area.id).emit('donut_collected', payload);
+        
+        // 3. Recycle if needed
+        if (areaDonuts.length >= MAX_DONUTS_PER_AREA) {
+            // Find oldest (simple sort)
+            areaDonuts.sort((a, b) => a.created_at - b.created_at);
+            const oldest = areaDonuts[0];
+            
+            // Remove from Memory
+            ACTIVE_DONUTS.delete(oldest.spawn_id);
+            
+            // Notify clients
+            const payload = { 
+                spawn_id: oldest.spawn_id, 
+                area_id: areaId, 
+                collected_by_player_id: 'system' 
+            };
+            
+            const cache = module.exports.areaRoomsCache;
+            if (cache && cache.has(areaId)) {
+                const rooms = cache.get(areaId);
+                for (const room of rooms) {
+                    io.to(room).emit('donut_collected', payload);
                 }
             } else {
-                currentValidCount++;
+                io.to(areaId).emit('donut_collected', payload);
             }
         }
 
-        // 4. Spawn new donuts if needed
-        if (currentValidCount < MAX_DONUTS_PER_AREA) {
-            await spawnDonutInArea(area, templates);
-        }
+        // 4. Always spawn a new one
+        await spawnDonutInArea(area, templates);
     }
 }
 
@@ -245,7 +239,8 @@ function initialize(socketIo, serviceKey, apiUrl) {
 
 function scheduleNextSpawn() {
     const delay = Math.floor(Math.random() * (MAX_INTERVAL - MIN_INTERVAL + 1)) + MIN_INTERVAL;
-    
+    console.log(`⏰ Donut Cycle: Ticking in ${delay}ms...`);
+
     setTimeout(async () => {
         try {
             await maintainDonuts();
@@ -258,19 +253,71 @@ function scheduleNextSpawn() {
 
 function setupSocketHandlers(socket, players) {
     // Handle real-time collection events
-    socket.on('client_collected_donut', (data) => {
+    socket.on('client_collected_donut', async (data) => {
         const p = players.get(socket.id);
         if (!p) return;
 
-        // Verify area match
-        if (p.current_area !== data.area_id) return;
+        const { spawn_id, area_id } = data;
 
-        // Broadcast removal to everyone in area
-        socket.to(p.current_area).emit('donut_collected', {
-            area_id: data.area_id, // Use the area_id from the event data to match client expectation
-            spawn_id: data.spawn_id,
+        // 1. Verify in MEMORY
+        if (!ACTIVE_DONUTS.has(spawn_id)) {
+            return; // Already collected or doesn't exist
+        }
+
+        const donut = ACTIVE_DONUTS.get(spawn_id);
+
+        // 2. Remove from MEMORY
+        ACTIVE_DONUTS.delete(spawn_id);
+
+        // 3. Reward Player (API Call)
+        try {
+            // Check if counter exists
+            const counters = await apiCall(`/entities/CollectibleCounter?query=${JSON.stringify({
+                player_id: p.playerId,
+                collectible_type: donut.collectible_type
+            })}`);
+            
+            if (counters && counters.length > 0) {
+                // Update
+                await apiCall(`/entities/CollectibleCounter/${counters[0].id}`, 'PATCH', {
+                    quantity: counters[0].quantity + 1
+                });
+            } else {
+                // Create
+                await apiCall(`/entities/CollectibleCounter`, 'POST', {
+                    player_id: p.playerId,
+                    collectible_type: donut.collectible_type,
+                    collectible_name: donut.collectible_name || donut.collectible_type,
+                    collectible_image: donut.image_url,
+                    quantity: 1
+                });
+            }
+            
+            // Notify success
+            socket.emit('collect_success', { type: donut.collectible_type });
+            
+        } catch (dbErr) {
+            console.error("Failed to reward player:", dbErr);
+        }
+
+        // 4. Broadcast removal
+        const payload = {
+            area_id: donut.area_id,
+            spawn_id: spawn_id,
             collected_by_player_id: p.playerId
-        });
+        };
+
+        const cache = module.exports.areaRoomsCache;
+        const lookupKey = cache && cache.has(p.current_area) ? p.current_area : donut.area_id;
+        
+        if (cache && cache.has(lookupKey)) {
+            const rooms = cache.get(lookupKey);
+            for (const room of rooms) {
+                io.to(room).emit('donut_collected', payload);
+            }
+        } else {
+            io.to(donut.area_id).emit('donut_collected', payload);
+        }
     });
 }
 
