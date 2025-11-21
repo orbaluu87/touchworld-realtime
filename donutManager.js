@@ -52,6 +52,8 @@ function setupSocketHandlers(socket, players) {
         // BROADCAST REMOVAL IMMEDIATELY to everyone in the area
         ioRef.to(donut.area_id).emit('donut_collected', { spawn_id });
 
+        console.log(`🍩 [DONUT LOG] Collected in ${donut.area_id}: ${spawn_id} by player (Socket: ${socket.id})`);
+
         // Reward Player (Async - doesn't block game flow)
         rewardPlayer(player.playerId, donut);
     });
@@ -185,19 +187,31 @@ async function rewardPlayer(playerId, donut) {
 async function fetchEntities(entity, filter = null, queryParam = null) {
     let url = `${apiUrl}/entities/${entity}`;
     if (filter) {
-        url += `?query=${JSON.stringify(filter)}`;
+        url += `?query=${encodeURIComponent(JSON.stringify(filter))}`;
     } else if (queryParam) {
         url += `?${queryParam}`;
     }
     
-    const res = await fetch(url, {
-        headers: { 
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${serviceKey}` 
+    try {
+        const res = await fetch(url, {
+            headers: { 
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${serviceKey}` 
+            }
+        });
+        
+        if (!res.ok) {
+            const txt = await res.text();
+            console.error(`🍩 [API ERROR] ${url} - ${res.status}: ${txt}`);
+            return [];
         }
-    });
-    if (!res.ok) return [];
-    return await res.json();
+        
+        const data = await res.json();
+        return data;
+    } catch (e) {
+        console.error(`🍩 [FETCH ERROR] ${url}:`, e.message);
+        return [];
+    }
 }
 
 async function createEntity(entity, data) {
