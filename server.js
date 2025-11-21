@@ -49,7 +49,7 @@ if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   process.exit(1);
 }
 
-const VERSION = "11.4.0"; // Dynamic Donut Spawning
+const VERSION = "11.7.0"; // Slow Donut Spawning Cycle
 
 // ---------- State ----------
 const players = new Map();
@@ -553,6 +553,11 @@ io.on("connection", async (socket) => {
 
   socket.emit("identify_ok", safePlayerView(player));
   socket.emit("current_players", areaPeers);
+  
+  // SYNC DONUTS (In-Memory)
+  const currentDonuts = donutManager.getDonutsForArea(player.current_area);
+  socket.emit("donuts_sync", currentDonuts);
+
   socket.to(player.current_area).emit("player_joined", safePlayerView(player));
 
   console.log(`🟢 Connected: ${player.username} (${player.current_area})`);
@@ -741,6 +746,10 @@ io.on("connection", async (socket) => {
 
     socket.emit("current_players", peers);
     socket.to(newArea).emit("player_joined", safePlayerView(p));
+
+    // SYNC DONUTS (In-Memory)
+    const currentDonuts = donutManager.getDonutsForArea(newArea);
+    socket.emit("donuts_sync", currentDonuts);
   });
 
   // ========== TRADE REQUEST ==========
