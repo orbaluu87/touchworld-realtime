@@ -140,7 +140,7 @@ async function verifyTokenWithBase44(token) {
       throw new Error(result?.error || "verifyWebSocketToken failed");
     }
 
-    const normalized = normalizeUserShape(result.user);
+    const normalized = normalizeUserShape(result.player || result.user);
     if (!normalized.playerId) {
       throw new Error("normalized playerId missing");
     }
