@@ -194,14 +194,12 @@ async function rewardPlayer(playerId, username, donut) {
     try {
         console.log(`[DonutManager] Rewarding user ${playerId} (${username}) for ${donut.collectible_type}`);
         
-        // 1. Fetch ALL counters for this user to ensure reliable string matching in memory
-        // (API filtering with Hebrew strings can sometimes be flaky)
-        const allUserCounters = await fetchEntities('CollectibleCounter', { 
-            user_id: playerId 
-        }, 'limit=1000');
-        
-        // Filter in-memory which is 100% reliable for Unicode/Hebrew
-        const existingCounters = allUserCounters.filter(c => c.collectible_type === donut.collectible_type);
+        // 1. Fetch SPECIFIC counters for this user AND this type
+        // This is scalable even with millions of rows, as we filter by index
+        const existingCounters = await fetchEntities('CollectibleCounter', { 
+            user_id: playerId, 
+            collectible_type: donut.collectible_type 
+        });
         
         if (existingCounters && existingCounters.length > 0) {
             // Found existing record(s)
