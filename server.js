@@ -94,7 +94,6 @@ function normalizePlayerShape(playerData) {
 
   return {
     playerId,
-    user_id: playerData?.user_id,
     username: playerData?.username ?? "Guest",
     display_name: playerData?.display_name,
     current_area: playerData?.current_area ?? "area1",
@@ -527,7 +526,6 @@ io.on("connection", async (socket) => {
   const player = {
     socketId: socket.id,
     playerId: playerData.playerId,
-    user_id: playerData.user_id,
     username: playerData.username,
     display_name: playerData.display_name,
     admin_level: playerData.admin_level,
