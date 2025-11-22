@@ -19,10 +19,10 @@ const MAX_INTERVAL = 40000;
 
 function initialize(io, key, url) {
     ioRef = io;
-    serviceKey = key;
+    serviceKey = key ? key.trim() : null;
     apiUrl = url;
     
-    console.log("🍩 Donut Manager Initialized (In-Memory Mode)");
+    console.log("🍩 Donut Manager Initialized");
     startSpawnLoop();
 }
 
@@ -86,7 +86,6 @@ async function tick() {
 
     try {
         // 1. Fetch ALL Areas to debug active status issue
-        //    (User reported "not finding active areas", so we fetch all and filter in memory to be safe)
         const allAreas = await fetchEntities('Area');
         
         if (!allAreas || allAreas.length === 0) {
@@ -149,7 +148,6 @@ async function processArea(area) {
     }
     
     // Logic: Spawn always (No limit)
-    // console.log(`[DonutManager] Spawning in ${area.area_id} [${area.version_name}] (Total Active: ${validVersionDonuts.length})`);
     spawnDonut(area, templates);
 }
 
@@ -196,12 +194,11 @@ async function rewardPlayer(playerId, username, donut) {
     try {
         console.log(`[DonutManager] Rewarding user ${playerId} (${username}) for ${donut.collectible_type}`);
         
-        // FETCH BY USER ID
-        // Using the filter argument directly which now handles encoding properly
+        // FETCH BY USER ID - Handle encoding properly
         const allPlayerCounters = await fetchEntities('CollectibleCounter', { user_id: playerId });
         
         // Filter in memory to find the specific collectible type
-        // Also handle the case where we might have duplicates - find the first one to update
+        // Handle duplicates by taking the first one if multiple exist
         const match = Array.isArray(allPlayerCounters) 
             ? allPlayerCounters.find(c => c.collectible_type === donut.collectible_type)
             : null;
@@ -209,20 +206,20 @@ async function rewardPlayer(playerId, username, donut) {
         if (match) {
             console.log(`[DonutManager] Updating existing counter ${match.id}. Old qty: ${match.quantity}`);
             
-            // Update
+            // Update existing
             await updateEntity('CollectibleCounter', match.id, {
-                quantity: match.quantity + 1,
-                username: username // Keep username updated just in case
+                quantity: Number(match.quantity) + 1,
+                username: username || match.username // Keep username updated
             });
             
             console.log(`[DonutManager] Counter updated successfully`);
         } else {
             console.log(`[DonutManager] Creating new counter for ${donut.collectible_type}`);
             
-            // Create
+            // Create new
             await createEntity('CollectibleCounter', {
                 user_id: playerId,
-                username: username,
+                username: username || 'Unknown',
                 collectible_type: donut.collectible_type,
                 collectible_name: donut.collectible_type,
                 collectible_image: donut.image_url || '',
@@ -245,8 +242,6 @@ async function fetchEntities(entity, filter = null, queryParam = null) {
     } else if (queryParam) {
         url += `?${queryParam}`;
     }
-    
-    // console.log(`[DonutManager] Fetching: ${url}`);
     
     try {
         const res = await fetch(url, {
