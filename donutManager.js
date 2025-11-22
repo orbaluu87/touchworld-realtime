@@ -226,8 +226,6 @@ async function rewardPlayer(userId, donut) {
             await createEntity('CollectibleCounter', {
                 user_id: userId,
                 collectible_type: donut.collectible_type,
-                collectible_name: donut.collectible_type || 'Unknown Collectible', 
-                collectible_image: donut.image_url || '',
                 quantity: 1
             });
             
