@@ -42,10 +42,20 @@ function setupSocketHandlers(socket, players) {
         const { spawn_id } = data;
         const player = players.get(socket.id);
         
-        if (!player || !ACTIVE_DONUTS.has(spawn_id)) return;
+        if (!player) {
+             console.log(`[DonutManager] Collection failed - Player not found for socket ${socket.id}`);
+             return;
+        }
+
+        if (!ACTIVE_DONUTS.has(spawn_id)) {
+            console.log(`[DonutManager] Collection failed - Donut ${spawn_id} not found or already collected`);
+            return;
+        }
 
         const donut = ACTIVE_DONUTS.get(spawn_id);
         
+        console.log(`[DonutManager] Donut ${spawn_id} collected by ${player.username} in ${donut.area_id}`);
+
         // REMOVE IMMEDIATELY from memory
         ACTIVE_DONUTS.delete(spawn_id);
 
@@ -72,12 +82,30 @@ async function tick() {
     if (!ioRef) return;
 
     try {
-        // 1. Fetch Active Areas (We need config for positions/types)
-        const areas = await fetchEntities('Area', { is_active: true });
-        if (!areas || areas.length === 0) return;
+        // 1. Fetch ALL Areas to debug active status issue
+        //    (User reported "not finding active areas", so we fetch all and filter in memory to be safe)
+        const allAreas = await fetchEntities('Area');
+        
+        if (!allAreas || allAreas.length === 0) {
+            console.log("[DonutManager] No areas found in DB at all.");
+            return;
+        }
 
-        // 2. Process each area
-        for (const area of areas) {
+        const activeAreas = allAreas.filter(a => a.is_active === true);
+
+        if (activeAreas.length === 0) {
+            console.log(`[DonutManager] Found ${allAreas.length} areas, but NONE are active. Check DB 'is_active' field.`);
+            // Log first area for debugging
+            if (allAreas.length > 0) {
+                 console.log("[DonutManager] Sample Area:", JSON.stringify(allAreas[0]));
+            }
+            return;
+        }
+
+        // console.log(`[DonutManager] Ticking for ${activeAreas.length} active areas (out of ${allAreas.length})...`);
+
+        // 2. Process each active area
+        for (const area of activeAreas) {
             await processArea(area);
         }
     } catch (error) {
@@ -101,6 +129,7 @@ async function processArea(area) {
 
     // User requirement: "only if there is a donut system object"
     if (templates.length === 0) {
+        // console.log(`[DonutManager] Skipped ${area.area_id} - No donut_system decoration found.`);
         return;
     }
 
@@ -207,14 +236,25 @@ async function fetchEntities(entity, filter = null, queryParam = null) {
         url += `?${queryParam}`;
     }
     
-    const res = await fetch(url, {
-        headers: { 
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${serviceKey}` 
+    try {
+        const res = await fetch(url, {
+            headers: { 
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${serviceKey}` 
+            }
+        });
+        
+        if (!res.ok) {
+            console.error(`[DonutManager] Fetch ${entity} failed: ${res.status} ${res.statusText}`);
+            const text = await res.text();
+            console.error(`[DonutManager] Response body: ${text}`);
+            return [];
         }
-    });
-    if (!res.ok) return [];
-    return await res.json();
+        return await res.json();
+    } catch (e) {
+        console.error(`[DonutManager] Fetch error for ${entity}:`, e.message);
+        return [];
+    }
 }
 
 async function createEntity(entity, data) {
