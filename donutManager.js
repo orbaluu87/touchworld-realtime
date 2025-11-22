@@ -194,29 +194,46 @@ async function rewardPlayer(playerId, username, donut) {
     try {
         console.log(`[DonutManager] Rewarding user ${playerId} (${username}) for ${donut.collectible_type}`);
         
-        // FETCH BY USER ID - Handle encoding properly
-        const allPlayerCounters = await fetchEntities('CollectibleCounter', { user_id: playerId });
+        // 1. Fetch SPECIFIC counters for this user AND this type
+        // This is scalable even with millions of rows, as we filter by index
+        const existingCounters = await fetchEntities('CollectibleCounter', { 
+            user_id: playerId, 
+            collectible_type: donut.collectible_type 
+        });
         
-        // Filter in memory to find the specific collectible type
-        // Handle duplicates by taking the first one if multiple exist
-        const match = Array.isArray(allPlayerCounters) 
-            ? allPlayerCounters.find(c => c.collectible_type === donut.collectible_type)
-            : null;
-        
-        if (match) {
-            console.log(`[DonutManager] Updating existing counter ${match.id}. Old qty: ${match.quantity}`);
+        if (existingCounters && existingCounters.length > 0) {
+            // Found existing record(s)
+            const mainRecord = existingCounters[0];
+            let totalQuantity = Number(mainRecord.quantity) || 0;
+
+            // HEAL: If duplicates exist (from past bugs), sum them up and delete extra rows
+            if (existingCounters.length > 1) {
+                console.log(`[DonutManager] Found ${existingCounters.length} duplicate rows for ${donut.collectible_type}. Merging...`);
+                
+                for (let i = 1; i < existingCounters.length; i++) {
+                    const dup = existingCounters[i];
+                    totalQuantity += (Number(dup.quantity) || 0);
+                    
+                    // Delete duplicate asynchronously
+                    deleteEntity('CollectibleCounter', dup.id).catch(err => 
+                        console.error(`[DonutManager] Failed to delete duplicate ${dup.id}`, err)
+                    );
+                }
+            }
+
+            // Update the main record with new total + 1
+            const newQuantity = totalQuantity + 1;
+            console.log(`[DonutManager] Updating main counter ${mainRecord.id}. New Total: ${newQuantity}`);
             
-            // Update existing
-            await updateEntity('CollectibleCounter', match.id, {
-                quantity: Number(match.quantity) + 1,
-                username: username || match.username // Keep username updated
+            await updateEntity('CollectibleCounter', mainRecord.id, {
+                quantity: newQuantity,
+                username: username || mainRecord.username
             });
             
-            console.log(`[DonutManager] Counter updated successfully`);
         } else {
-            console.log(`[DonutManager] Creating new counter for ${donut.collectible_type}`);
+            // No record exists - Create new one
+            console.log(`[DonutManager] Creating FIRST counter for ${donut.collectible_type}`);
             
-            // Create new
             await createEntity('CollectibleCounter', {
                 user_id: playerId,
                 username: username || 'Unknown',
@@ -225,8 +242,6 @@ async function rewardPlayer(playerId, username, donut) {
                 collectible_image: donut.image_url || '',
                 quantity: 1
             });
-            
-            console.log(`[DonutManager] Counter created successfully`);
         }
     } catch (e) {
         console.error("[DonutManager] Failed to reward player:", e);
@@ -237,10 +252,16 @@ async function rewardPlayer(playerId, username, donut) {
 
 async function fetchEntities(entity, filter = null, queryParam = null) {
     let url = `${apiUrl}/entities/${entity}`;
+    const params = [];
     if (filter) {
-        url += `?query=${encodeURIComponent(JSON.stringify(filter))}`;
-    } else if (queryParam) {
-        url += `?${queryParam}`;
+        params.push(`query=${encodeURIComponent(JSON.stringify(filter))}`);
+    }
+    if (queryParam) {
+        params.push(queryParam);
+    }
+    
+    if (params.length > 0) {
+        url += `?${params.join('&')}`;
     }
     
     try {
@@ -309,6 +330,25 @@ async function updateEntity(entity, id, data) {
     } catch (e) {
         console.error(`[DonutManager] Update error:`, e);
         throw e;
+    }
+}
+
+async function deleteEntity(entity, id) {
+    const url = `${apiUrl}/entities/${entity}/${id}`;
+    try {
+        const res = await fetch(url, {
+            method: 'DELETE',
+            headers: { 
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${serviceKey}` 
+            }
+        });
+        
+        if (!res.ok) {
+            console.error(`[DonutManager] Delete ${entity} failed: ${res.status}`);
+        }
+    } catch (e) {
+        console.error(`[DonutManager] Delete error:`, e);
     }
 }
 
