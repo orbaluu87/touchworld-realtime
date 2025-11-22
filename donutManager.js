@@ -86,7 +86,7 @@ async function tick() {
 }
 
 async function processArea(area) {
-    // Parse templates
+    // 1. Parse templates (Check if donut system object exists)
     let templates = [];
     try {
         if (area.decorations) {
@@ -95,15 +95,37 @@ async function processArea(area) {
                 templates = decos.filter(d => d.action_type === 'donut_system');
             }
         }
-    } catch (e) {}
+    } catch (e) {
+        console.error(`[DonutManager] Error parsing decorations for ${area.area_id}:`, e.message);
+    }
 
-    if (templates.length === 0) return;
+    // User requirement: "only if there is a donut system object"
+    if (templates.length === 0) {
+        return;
+    }
 
-    // Count current donuts
-    const currentDonuts = getDonutsForArea(area.area_id);
+    // 2. Filter and Clean Donuts by version_name
+    const validVersionDonuts = [];
+    
+    for (const [id, d] of ACTIVE_DONUTS.entries()) {
+        if (d.area_id === area.area_id) {
+            // User requirement: "pull by version_name"
+            if (d.version_name === area.version_name) {
+                validVersionDonuts.push(d);
+            } else {
+                // Cleanup old version donuts
+                console.log(`[DonutManager] Removing mismatched version donut: ${id} (${d.version_name} != ${area.version_name})`);
+                ACTIVE_DONUTS.delete(id);
+                if (ioRef) {
+                    ioRef.to(area.area_id).emit('donut_collected', { spawn_id: id });
+                }
+            }
+        }
+    }
     
     // Logic: Spawn if below max
-    if (currentDonuts.length < MAX_DONUTS_PER_AREA) {
+    if (validVersionDonuts.length < MAX_DONUTS_PER_AREA) {
+        console.log(`[DonutManager] Spawning in ${area.area_id} [${area.version_name}] (${validVersionDonuts.length}/${MAX_DONUTS_PER_AREA})`);
         spawnDonut(area, templates);
     }
 }
@@ -123,6 +145,7 @@ function spawnDonut(area, templates) {
     const donut = {
         spawn_id: spawnId,
         area_id: area.area_id,
+        version_name: area.version_name, // Store version name for filtering
         collectible_type: template.name || 'donut',
         image_url: template.image_url,
         position_x: x,
