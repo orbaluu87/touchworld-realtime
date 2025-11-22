@@ -49,7 +49,8 @@ if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   process.exit(1);
 }
 
-const VERSION = "11.7.0"; // Slow Donut Spawning Cycle
+const VERSION = "11.8.0"; // Donut Reward Fix Applied
+console.log("🔥 FORCE RESTART: DonutManager should be using internalRewardPlayer now.");
 
 // ---------- State ----------
 const players = new Map();
@@ -147,6 +148,7 @@ async function verifyTokenWithBase44(token) {
 
     const normalized = normalizePlayerShape(result.player);
     if (!normalized.playerId) {
+      console.error("❌ normalizePlayerShape failed. Input:", JSON.stringify(result.player));
       throw new Error("normalized playerId missing");
     }
 
@@ -525,13 +527,10 @@ io.on("connection", async (socket) => {
 
   // Register player
   const player = {
-  socketId: socket.id,
-  playerId: playerData.playerId,
-  user_id: playerData.user_id,
-  username: playerData.username,
-
-  // Debug User ID
-  _debug_user_id_status: playerData.user_id ? 'present' : 'missing',
+    socketId: socket.id,
+    playerId: playerData.playerId,
+    user_id: playerData.user_id,
+    username: playerData.username,
     display_name: playerData.display_name,
     admin_level: playerData.admin_level,
     current_area: playerData.current_area || "area1",
@@ -565,7 +564,7 @@ io.on("connection", async (socket) => {
 
   socket.to(player.current_area).emit("player_joined", safePlayerView(player));
 
-  console.log(`🟢 Connected: ${player.username} (${player.current_area}) [UID: ${player.user_id || 'MISSING'}]`);
+  console.log(`🟢 Connected: ${player.username} (${player.current_area})`);
 
   // ========== DONUT SYSTEM ==========
   if (donutManager && typeof donutManager.setupSocketHandlers === 'function') {
