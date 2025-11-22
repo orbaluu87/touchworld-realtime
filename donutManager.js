@@ -197,15 +197,15 @@ async function rewardPlayer(userId, donut) {
         console.log(`[DonutManager] Rewarding user ${userId} for ${donut.collectible_type}`);
         
         // Check existing counter
-        const query = JSON.stringify({ 
+        const filter = { 
             user_id: userId, 
             collectible_type: donut.collectible_type 
-        });
+        };
         
         // Log the query for debugging
-        console.log(`[DonutManager] Fetching counters with query: ${query}`);
+        console.log(`[DonutManager] Fetching counters with filter:`, filter);
         
-        const counters = await fetchEntities('CollectibleCounter', null, `query=${query}`);
+        const counters = await fetchEntities('CollectibleCounter', filter);
         
         console.log(`[DonutManager] Found ${counters ? counters.length : 0} counters`);
         
@@ -243,7 +243,7 @@ async function rewardPlayer(userId, donut) {
 async function fetchEntities(entity, filter = null, queryParam = null) {
     let url = `${apiUrl}/entities/${entity}`;
     if (filter) {
-        url += `?query=${JSON.stringify(filter)}`;
+        url += `?query=${encodeURIComponent(JSON.stringify(filter))}`;
     } else if (queryParam) {
         url += `?${queryParam}`;
     }
