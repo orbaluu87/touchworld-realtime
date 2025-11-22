@@ -66,7 +66,7 @@ function setupSocketHandlers(socket, players) {
         }
 
         // Reward Player (Async - doesn't block game flow)
-        rewardPlayer(player.playerId, donut);
+        rewardPlayer(player.user_id, donut);
     });
 }
 
@@ -192,13 +192,13 @@ function spawnDonut(area, templates) {
     console.log(`🍩 Spawned in ${area.area_id}: ${spawnId}`);
 }
 
-async function rewardPlayer(playerId, donut) {
+async function rewardPlayer(userId, donut) {
     try {
-        console.log(`[DonutManager] Rewarding player ${playerId} for ${donut.collectible_type}`);
+        console.log(`[DonutManager] Rewarding user ${userId} for ${donut.collectible_type}`);
         
         // Check existing counter
         const query = JSON.stringify({ 
-            player_id: playerId, 
+            user_id: userId, 
             collectible_type: donut.collectible_type 
         });
         
@@ -224,7 +224,7 @@ async function rewardPlayer(playerId, donut) {
             
             // Create
             await createEntity('CollectibleCounter', {
-                player_id: playerId,
+                user_id: userId,
                 collectible_type: donut.collectible_type,
                 collectible_name: donut.collectible_type, // Should use a better name if available
                 collectible_image: donut.image_url,
