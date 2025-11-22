@@ -168,7 +168,7 @@ function spawnDonut(area, templates) {
         area_id: area.area_id,
         area_uuid: area.id, // Store UUID for efficient broadcasting
         version_name: area.version_name, 
-        collectible_type: template.name || 'donut',
+        collectible_type: (template.name || 'donut').trim(),
         image_url: template.image_url,
         position_x: x,
         position_y: y,
