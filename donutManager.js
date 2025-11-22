@@ -198,7 +198,7 @@ async function rewardPlayer(playerId, donut) {
         
         // Check existing counter
         const filter = { 
-            player_id: playerId, 
+            user_id: playerId, 
             collectible_type: donut.collectible_type 
         };
         
@@ -224,7 +224,7 @@ async function rewardPlayer(playerId, donut) {
             
             // Create
             await createEntity('CollectibleCounter', {
-                player_id: playerId,
+                user_id: playerId,
                 collectible_type: donut.collectible_type,
                 quantity: 1
             });
