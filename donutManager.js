@@ -11,7 +11,7 @@ let serviceKey = null;
 let apiUrl = null;
 
 // Constants
-const MAX_DONUTS_PER_AREA = 30;
+// No limit on donuts as requested
 const MIN_INTERVAL = 2000;
 const MAX_INTERVAL = 6000;
 
@@ -59,8 +59,11 @@ function setupSocketHandlers(socket, players) {
         // REMOVE IMMEDIATELY from memory
         ACTIVE_DONUTS.delete(spawn_id);
 
-        // BROADCAST REMOVAL IMMEDIATELY to everyone in the area
+        // BROADCAST REMOVAL IMMEDIATELY to everyone in the area (both logical and specific rooms)
         ioRef.to(donut.area_id).emit('donut_collected', { spawn_id });
+        if (donut.area_uuid && donut.area_uuid !== donut.area_id) {
+             ioRef.to(donut.area_uuid).emit('donut_collected', { spawn_id });
+        }
 
         // Reward Player (Async - doesn't block game flow)
         rewardPlayer(player.playerId, donut);
@@ -152,11 +155,9 @@ async function processArea(area) {
         }
     }
     
-    // Logic: Spawn if below max
-    if (validVersionDonuts.length < MAX_DONUTS_PER_AREA) {
-        console.log(`[DonutManager] Spawning in ${area.area_id} [${area.version_name}] (${validVersionDonuts.length}/${MAX_DONUTS_PER_AREA})`);
-        spawnDonut(area, templates);
-    }
+    // Logic: Spawn always (No limit)
+    console.log(`[DonutManager] Spawning in ${area.area_id} [${area.version_name}] (Total Active: ${validVersionDonuts.length})`);
+    spawnDonut(area, templates);
 }
 
 function spawnDonut(area, templates) {
@@ -174,7 +175,8 @@ function spawnDonut(area, templates) {
     const donut = {
         spawn_id: spawnId,
         area_id: area.area_id,
-        version_name: area.version_name, // Store version name for filtering
+        area_uuid: area.id, // Store UUID for efficient broadcasting
+        version_name: area.version_name, 
         collectible_type: template.name || 'donut',
         image_url: template.image_url,
         position_x: x,
@@ -185,12 +187,13 @@ function spawnDonut(area, templates) {
     // 4. Store in Memory
     ACTIVE_DONUTS.set(spawnId, donut);
 
-    // 5. Broadcast
-    ioRef.to(area.area_id).emit('donut_spawned', donut);
+    // 5. Broadcast (Wrap in payload to match client expectation)
+    const payload = { area_id: area.area_id, spawn: donut };
     
-    // Also broadcast to the specific version ID room if it's different
+    ioRef.to(area.area_id).emit('donut_spawned', payload);
+    
     if (area.id && area.id !== area.area_id) {
-        ioRef.to(area.id).emit('donut_spawned', donut);
+        ioRef.to(area.id).emit('donut_spawned', payload);
     }
     
     console.log(`🍩 Spawned in ${area.area_id}: ${spawnId}`);
