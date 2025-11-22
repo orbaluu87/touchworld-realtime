@@ -194,6 +194,11 @@ function spawnDonut(area, templates) {
 
 async function rewardPlayer(userId, donut) {
     try {
+        if (!userId) {
+            console.error("[DonutManager] ❌ rewardPlayer failed: No userId provided");
+            return;
+        }
+
         console.log(`[DonutManager] Rewarding user ${userId} for ${donut.collectible_type}`);
         
         // Check existing counter
@@ -203,7 +208,7 @@ async function rewardPlayer(userId, donut) {
         };
         
         // Log the query for debugging
-        console.log(`[DonutManager] Fetching counters with filter:`, filter);
+        console.log(`[DonutManager] Fetching counters with filter:`, JSON.stringify(filter));
         
         const counters = await fetchEntities('CollectibleCounter', filter);
         
@@ -242,8 +247,12 @@ async function rewardPlayer(userId, donut) {
 
 async function fetchEntities(entity, filter = null, queryParam = null) {
     let url = `${apiUrl}/entities/${entity}`;
+    
     if (filter) {
-        url += `?query=${encodeURIComponent(JSON.stringify(filter))}`;
+        // Use URLSearchParams for safer encoding
+        const params = new URLSearchParams();
+        params.append('query', JSON.stringify(filter));
+        url += `?${params.toString()}`;
     } else if (queryParam) {
         url += `?${queryParam}`;
     }
