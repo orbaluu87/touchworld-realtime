@@ -66,7 +66,7 @@ function setupSocketHandlers(socket, players) {
         }
 
         // Reward Player (Async - doesn't block game flow)
-        rewardPlayer(player.user_id, donut);
+        rewardPlayer(player.playerId, donut);
     });
 }
 
@@ -192,42 +192,39 @@ function spawnDonut(area, templates) {
     console.log(`🍩 Spawned in ${area.area_id}: ${spawnId}`);
 }
 
-async function rewardPlayer(userId, donut) {
+async function rewardPlayer(playerId, donut) {
     try {
-        console.log(`[DonutManager] Rewarding user ${userId} for ${donut.collectible_type}`);
+        console.log(`[DonutManager] Rewarding player ${playerId} for ${donut.collectible_type}`);
         
-        // Check existing counter
-        const query = JSON.stringify({ 
-            user_id: userId, 
-            collectible_type: donut.collectible_type 
-        });
+        // FETCH BY PLAYER ID ONLY to be safe, then filter in memory
+        // This avoids issues with complex query parsing on the server
+        const query = JSON.stringify({ player_id: playerId });
         
-        // Log the query for debugging
-        console.log(`[DonutManager] Fetching counters with query: ${query}`);
+        const allPlayerCounters = await fetchEntities('CollectibleCounter', null, `query=${query}`);
         
-        const counters = await fetchEntities('CollectibleCounter', null, `query=${query}`);
+        // Filter in memory to find the specific collectible type
+        const match = Array.isArray(allPlayerCounters) 
+            ? allPlayerCounters.find(c => c.collectible_type === donut.collectible_type)
+            : null;
         
-        console.log(`[DonutManager] Found ${counters ? counters.length : 0} counters`);
-        
-        if (counters && counters.length > 0) {
-            const counter = counters[0];
-            console.log(`[DonutManager] Updating counter ${counter.id}. Old qty: ${counter.quantity}`);
+        if (match) {
+            console.log(`[DonutManager] Updating existing counter ${match.id}. Old qty: ${match.quantity}`);
             
             // Update
-            await updateEntity('CollectibleCounter', counter.id, {
-                quantity: counter.quantity + 1
+            await updateEntity('CollectibleCounter', match.id, {
+                quantity: match.quantity + 1
             });
             
             console.log(`[DonutManager] Counter updated successfully`);
         } else {
-            console.log(`[DonutManager] Creating new counter`);
+            console.log(`[DonutManager] Creating new counter for ${donut.collectible_type}`);
             
             // Create
             await createEntity('CollectibleCounter', {
-                user_id: userId,
+                player_id: playerId,
                 collectible_type: donut.collectible_type,
-                collectible_name: donut.collectible_type, // Should use a better name if available
-                collectible_image: donut.image_url,
+                collectible_name: donut.collectible_type,
+                collectible_image: donut.image_url || '',
                 quantity: 1
             });
             
