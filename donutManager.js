@@ -197,11 +197,11 @@ async function rewardPlayer(playerId, username, donut) {
         console.log(`[DonutManager] Rewarding user ${playerId} (${username}) for ${donut.collectible_type}`);
         
         // FETCH BY USER ID
-        const query = JSON.stringify({ user_id: playerId });
-        
-        const allPlayerCounters = await fetchEntities('CollectibleCounter', null, `query=${query}`);
+        // Using the filter argument directly which now handles encoding properly
+        const allPlayerCounters = await fetchEntities('CollectibleCounter', { user_id: playerId });
         
         // Filter in memory to find the specific collectible type
+        // Also handle the case where we might have duplicates - find the first one to update
         const match = Array.isArray(allPlayerCounters) 
             ? allPlayerCounters.find(c => c.collectible_type === donut.collectible_type)
             : null;
@@ -241,7 +241,7 @@ async function rewardPlayer(playerId, username, donut) {
 async function fetchEntities(entity, filter = null, queryParam = null) {
     let url = `${apiUrl}/entities/${entity}`;
     if (filter) {
-        url += `?query=${JSON.stringify(filter)}`;
+        url += `?query=${encodeURIComponent(JSON.stringify(filter))}`;
     } else if (queryParam) {
         url += `?${queryParam}`;
     }
