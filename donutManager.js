@@ -66,7 +66,7 @@ function setupSocketHandlers(socket, players) {
         }
 
         // Reward Player (Async - doesn't block game flow)
-        rewardPlayer(player.playerId, donut);
+        rewardPlayer(player.playerId, player.username, donut);
     });
 }
 
@@ -192,13 +192,12 @@ function spawnDonut(area, templates) {
     console.log(`🍩 Spawned in ${area.area_id}: ${spawnId}`);
 }
 
-async function rewardPlayer(playerId, donut) {
+async function rewardPlayer(playerId, username, donut) {
     try {
-        console.log(`[DonutManager] Rewarding player ${playerId} for ${donut.collectible_type}`);
+        console.log(`[DonutManager] Rewarding user ${playerId} (${username}) for ${donut.collectible_type}`);
         
-        // FETCH BY PLAYER ID ONLY to be safe, then filter in memory
-        // This avoids issues with complex query parsing on the server
-        const query = JSON.stringify({ player_id: playerId });
+        // FETCH BY USER ID
+        const query = JSON.stringify({ user_id: playerId });
         
         const allPlayerCounters = await fetchEntities('CollectibleCounter', null, `query=${query}`);
         
@@ -212,7 +211,8 @@ async function rewardPlayer(playerId, donut) {
             
             // Update
             await updateEntity('CollectibleCounter', match.id, {
-                quantity: match.quantity + 1
+                quantity: match.quantity + 1,
+                username: username // Keep username updated just in case
             });
             
             console.log(`[DonutManager] Counter updated successfully`);
@@ -221,7 +221,8 @@ async function rewardPlayer(playerId, donut) {
             
             // Create
             await createEntity('CollectibleCounter', {
-                player_id: playerId,
+                user_id: playerId,
+                username: username,
                 collectible_type: donut.collectible_type,
                 collectible_name: donut.collectible_type,
                 collectible_image: donut.image_url || '',
