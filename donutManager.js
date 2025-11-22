@@ -11,7 +11,6 @@ let serviceKey = null;
 let apiUrl = null;
 
 // Constants
-// No limit on donuts as requested
 const MIN_INTERVAL = 6000;
 const MAX_INTERVAL = 40000;
 
@@ -22,7 +21,7 @@ function initialize(io, key, url) {
     serviceKey = key;
     apiUrl = url;
     
-    console.log("🍩 Donut Manager Initialized (In-Memory Mode)");
+    console.log("🍩 Donut Manager v11.8.0 Initialized (Internal Reward Mode)");
     startSpawnLoop();
 }
 
@@ -86,7 +85,6 @@ async function tick() {
 
     try {
         // 1. Fetch ALL Areas to debug active status issue
-        //    (User reported "not finding active areas", so we fetch all and filter in memory to be safe)
         const allAreas = await fetchEntities('Area');
         
         if (!allAreas || allAreas.length === 0) {
@@ -149,7 +147,6 @@ async function processArea(area) {
     }
     
     // Logic: Spawn always (No limit)
-    // console.log(`[DonutManager] Spawning in ${area.area_id} [${area.version_name}] (Total Active: ${validVersionDonuts.length})`);
     spawnDonut(area, templates);
 }
 
@@ -158,7 +155,6 @@ function spawnDonut(area, templates) {
     const template = templates[Math.floor(Math.random() * templates.length)];
     
     // 2. Find Position (Simple Random for now, skipping complex collision for speed unless vital)
-    // Using basic map bounds padding
     const PADDING = 100;
     const x = Math.floor(Math.random() * (1380 - PADDING * 2)) + PADDING;
     const y = Math.floor(Math.random() * (770 - PADDING * 2)) + PADDING;
@@ -201,45 +197,33 @@ async function rewardPlayer(userId, donut) {
 
         console.log(`[DonutManager] Rewarding user ${userId} for ${donut.collectible_type}`);
         
-        // Check existing counter
-        const filter = { 
-            user_id: userId, 
-            collectible_type: donut.collectible_type 
-        };
+        // Use the internal backend function to handle the DB update with Service Role privileges
+        const url = `${apiUrl}/functions/internalRewardPlayer`;
         
-        // Log the query for debugging
-        console.log(`[DonutManager] Fetching counters with filter:`, JSON.stringify(filter));
-        
-        const counters = await fetchEntities('CollectibleCounter', filter);
-        
-        console.log(`[DonutManager] Found ${counters ? counters.length : 0} counters`);
-        
-        if (counters && counters.length > 0) {
-            const counter = counters[0];
-            console.log(`[DonutManager] Updating counter ${counter.id}. Old qty: ${counter.quantity}`);
-            
-            // Update
-            await updateEntity('CollectibleCounter', counter.id, {
-                quantity: counter.quantity + 1
-            });
-            
-            console.log(`[DonutManager] Counter updated successfully`);
-        } else {
-            console.log(`[DonutManager] Creating new counter`);
-            
-            // Create
-            await createEntity('CollectibleCounter', {
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: { 
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${serviceKey}` 
+            },
+            body: JSON.stringify({
                 user_id: userId,
                 collectible_type: donut.collectible_type,
-                collectible_name: donut.collectible_type, // Should use a better name if available
-                collectible_image: donut.image_url,
-                quantity: 1
-            });
-            
-            console.log(`[DonutManager] Counter created successfully`);
+                collectible_name: donut.collectible_type,
+                collectible_image: donut.image_url
+            })
+        });
+
+        if (!res.ok) {
+            const text = await res.text();
+            throw new Error(`Function call failed: ${res.status} ${text}`);
         }
+
+        const result = await res.json();
+        console.log(`[DonutManager] Reward success! New quantity: ${result.quantity}`);
+        
     } catch (e) {
-        console.error("[DonutManager] Failed to reward player:", e);
+        console.error("[DonutManager] Failed to reward player:", e.message);
     }
 }
 
@@ -249,15 +233,12 @@ async function fetchEntities(entity, filter = null, queryParam = null) {
     let url = `${apiUrl}/entities/${entity}`;
     
     if (filter) {
-        // Use URLSearchParams for safer encoding
         const params = new URLSearchParams();
         params.append('query', JSON.stringify(filter));
         url += `?${params.toString()}`;
     } else if (queryParam) {
         url += `?${queryParam}`;
     }
-    
-    // console.log(`[DonutManager] Fetching: ${url}`);
     
     try {
         const res = await fetch(url, {
@@ -277,54 +258,6 @@ async function fetchEntities(entity, filter = null, queryParam = null) {
     } catch (e) {
         console.error(`[DonutManager] Fetch error for ${entity}:`, e.message);
         return [];
-    }
-}
-
-async function createEntity(entity, data) {
-    const url = `${apiUrl}/entities/${entity}`;
-    try {
-        const res = await fetch(url, {
-            method: 'POST',
-            headers: { 
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${serviceKey}` 
-            },
-            body: JSON.stringify(data)
-        });
-        
-        if (!res.ok) {
-            const text = await res.text();
-            console.error(`[DonutManager] Create ${entity} failed: ${text}`);
-            throw new Error(`Create failed: ${res.statusText}`);
-        }
-        return await res.json();
-    } catch (e) {
-        console.error(`[DonutManager] Create error:`, e);
-        throw e;
-    }
-}
-
-async function updateEntity(entity, id, data) {
-    const url = `${apiUrl}/entities/${entity}/${id}`;
-    try {
-        const res = await fetch(url, {
-            method: 'PATCH',
-            headers: { 
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${serviceKey}` 
-            },
-            body: JSON.stringify(data)
-        });
-        
-        if (!res.ok) {
-            const text = await res.text();
-            console.error(`[DonutManager] Update ${entity} failed: ${text}`);
-            throw new Error(`Update failed: ${res.statusText}`);
-        }
-        return await res.json();
-    } catch (e) {
-        console.error(`[DonutManager] Update error:`, e);
-        throw e;
     }
 }
 
