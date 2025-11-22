@@ -12,8 +12,8 @@ let apiUrl = null;
 
 // Constants
 // No limit on donuts as requested
-const MIN_INTERVAL = 2000;
-const MAX_INTERVAL = 6000;
+const MIN_INTERVAL = 10000;
+const MAX_INTERVAL = 40000;
 
 // --- Public API ---
 
