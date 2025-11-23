@@ -1,15 +1,14 @@
 // ============================================================================
-// Touch World - Socket Server v11.3.0 - PLAYER-ONLY SYSTEM + DONUT SYNC FIXED
+// Touch World - Socket Server v10.3.0 - STEALTH MODE ENABLED!
 // ============================================================================
 
-const { createServer } = require("http");
-const express = require("express");
-const cors = require("cors");
-const helmet = require("helmet");
-const { Server } = require("socket.io");
-const fetch = require("node-fetch");
-const donutManager = require("./donutManager");
-require("dotenv").config();
+import { createServer } from "http";
+import express from "express";
+import cors from "cors";
+import helmet from "helmet";
+import { Server } from "socket.io";
+import fetch from "node-fetch";
+import "dotenv/config";
 
 const app = express();
 app.use(express.json());
@@ -34,7 +33,7 @@ const httpServer = createServer(app);
 const PORT = process.env.PORT || 10000;
 
 // ---------- Env / Security ----------
-const JWT_SECRET = process.env.JWT_SECRET;
+const JWT_SECRET = process.env.WSS_JWT_SECRET || process.env.JWT_SECRET;
 const VERIFY_TOKEN_URL =
   process.env.VERIFY_TOKEN_URL ||
   "https://base44.app/api/apps/68e269394d8f2fa24e82cd71/functions/verifyWebSocketToken";
@@ -49,14 +48,12 @@ if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   process.exit(1);
 }
 
-const VERSION = "11.7.0"; // Slow Donut Spawning Cycle
+const VERSION = "10.3.0";
 
 // ---------- State ----------
 const players = new Map();
 const activeTrades = new Map();
 const chatRateLimit = new Map();
-
-const KEEP_AWAY_RADIUS = 200;
 
 // ---------- Helpers ----------
 const now = () => Date.now();
@@ -78,7 +75,7 @@ function safePlayerView(p) {
     animation_frame: p.animation_frame || "idle",
     move_speed: 120,
     is_trading: !!p.activeTradeId,
-    is_invisible: !!p.is_invisible,
+    is_invisible: !!p.is_invisible, // ✅ הוספתי!
   };
 }
 
@@ -89,38 +86,36 @@ function getSocketIdByPlayerId(playerId) {
   return null;
 }
 
-function normalizePlayerShape(playerData) {
-  const playerId = playerData?.id ?? playerData?.playerId;
+function normalizeUserShape(userAny) {
+  const pd = userAny?.player_data || userAny;
+  const playerId = pd?.id ?? pd?.playerId ?? pd?.userId ?? userAny?.id ?? userAny?.playerId;
 
   return {
     playerId,
-    username: playerData?.username ?? "Guest",
-    display_name: playerData?.display_name,
-    current_area: playerData?.current_area ?? "betach",
-    admin_level: playerData?.admin_level ?? "user",
+    userId: pd?.userId ?? playerId,
+    username: pd?.username ?? "Guest",
+    current_area: pd?.current_area ?? "betach",
+    admin_level: pd?.admin_level ?? "user",
+    jti: userAny?.jti || null,
+    iat: userAny?.iat || null,
     equipment: {
-      skin_code: playerData?.skin_code,
-      equipped_hair: playerData?.equipped_hair,
-      equipped_top: playerData?.equipped_top,
-      equipped_pants: playerData?.equipped_pants,
-      equipped_hat: playerData?.equipped_hat,
-      equipped_necklace: playerData?.equipped_necklace,
-      equipped_halo: playerData?.equipped_halo,
-      equipped_shoes: playerData?.equipped_shoes,
-      equipped_gloves: playerData?.equipped_gloves,
-      equipped_face: playerData?.equipped_face,
-      equipped_accessory: playerData?.equipped_accessory,
-      ...(playerData?.equipment || {}),
+      skin_code: pd?.skin_code,
+      equipped_hair: pd?.equipped_hair,
+      equipped_top: pd?.equipped_top,
+      equipped_pants: pd?.equipped_pants,
+      equipped_hat: pd?.equipped_hat,
+      equipped_necklace: pd?.equipped_necklace,
+      equipped_halo: pd?.equipped_halo,
+      equipped_shoes: pd?.equipped_shoes,
+      equipped_gloves: pd?.equipped_gloves,
+      equipped_accessory: pd?.equipped_accessory,
+      ...(pd?.equipment || {}),
     },
-    position_x: Number.isFinite(playerData?.position_x) ? playerData.position_x : 600,
-    position_y: Number.isFinite(playerData?.position_y) ? playerData.position_y : 400,
-    direction: playerData?.direction ?? "front",
-    keep_away_mode: !!playerData?.keep_away_mode,
-    is_invisible: !!playerData?.is_invisible,
-    level: playerData?.level || 1,
-    xp: playerData?.xp || 0,
-    coins: playerData?.coins || 500,
-    gems: playerData?.gems || 10,
+    position_x: Number.isFinite(pd?.position_x) ? pd.position_x : 600,
+    position_y: Number.isFinite(pd?.position_y) ? pd.position_y : 400,
+    direction: pd?.direction ?? "front",
+    keep_away_mode: !!pd?.keep_away_mode,
+    is_invisible: !!pd?.is_invisible, // ✅ הוספתי!
   };
 }
 
@@ -141,254 +136,26 @@ async function verifyTokenWithBase44(token) {
     }
 
     const result = await response.json();
-    if (!result?.success || !result?.player) {
+    if (!result?.success) {
       throw new Error(result?.error || "verifyWebSocketToken failed");
     }
 
-    const normalized = normalizePlayerShape(result.player);
+    const normalized = normalizeUserShape(result.user);
     if (!normalized.playerId) {
       throw new Error("normalized playerId missing");
     }
 
+    const jtiShort = normalized.jti ? normalized.jti.substring(0, 8) : 'N/A';
+    const iatTime = normalized.iat ? new Date(normalized.iat * 1000).toLocaleTimeString('he-IL') : 'N/A';
+    
     console.log(`✅ Token OK: ${normalized.username} (${normalized.playerId})`);
+    console.log(`   🔐 JTI: ${jtiShort}... | IAT: ${iatTime}`);
+    console.log(`   👻 Invisible: ${normalized.is_invisible}`);
     
     return normalized;
   } catch (err) {
     console.error("❌ Token Error:", err.message);
     return null;
-  }
-}
-
-function calculateDistance(x1, y1, x2, y2) {
-  return Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2));
-}
-
-function calculateSafePosition(playerX, playerY, adminX, adminY, radius) {
-  const dx = playerX - adminX;
-  const dy = playerY - adminY;
-  const distance = Math.sqrt(dx * dx + dy * dy);
-  
-  if (distance === 0) {
-    return { x: adminX + radius + 10, y: adminY };
-  }
-  
-  const nx = dx / distance;
-  const ny = dy / distance;
-  
-  const safeX = adminX + nx * (radius + 20);
-  const safeY = adminY + ny * (radius + 20);
-  
-  return { x: safeX, y: safeY };
-}
-
-function pushAwayNearbyPlayers(adminPlayer, areaId, io) {
-  const playersInArea = Array.from(players.values()).filter(
-    p => p.current_area === areaId && p.playerId !== adminPlayer.playerId && p.admin_level === 'user'
-  );
-
-  const movedPlayers = [];
-
-  for (const player of playersInArea) {
-    const distance = calculateDistance(
-      player.position_x,
-      player.position_y,
-      adminPlayer.position_x,
-      adminPlayer.position_y
-    );
-
-    if (distance < KEEP_AWAY_RADIUS) {
-      const safePos = calculateSafePosition(
-        player.position_x,
-        player.position_y,
-        adminPlayer.position_x,
-        adminPlayer.position_y,
-        KEEP_AWAY_RADIUS
-      );
-
-      player.position_x = safePos.x;
-      player.position_y = safePos.y;
-      player.is_moving = false;
-      player.destination_x = undefined;
-      player.destination_y = undefined;
-
-      movedPlayers.push({
-        id: player.playerId,
-        playerId: player.playerId,
-        socketId: player.socketId,
-        position_x: player.position_x,
-        position_y: player.position_y,
-        is_moving: false,
-        direction: player.direction,
-        animation_frame: "idle",
-      });
-
-      console.log(`🚫 Pushed ${player.username} away from admin ${adminPlayer.username}`);
-    }
-  }
-
-  if (movedPlayers.length > 0) {
-    io.to(areaId).emit("players_moved", movedPlayers);
-  }
-}
-
-async function getEquippedItemsFromOffer(playerId, offerItems) {
-  if (!offerItems || offerItems.length === 0) return [];
-
-  try {
-    const itemsResponse = await fetch(`${BASE44_API_URL}/entities/Item`, {
-      method: "GET",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${BASE44_SERVICE_KEY}`,
-      },
-    });
-
-    if (!itemsResponse.ok) return [];
-    
-    const allItems = await itemsResponse.json();
-    const itemsMap = new Map(allItems.map(item => [item.id, item]));
-
-    const socketId = getSocketIdByPlayerId(playerId);
-    if (!socketId) return [];
-    
-    const player = players.get(socketId);
-    if (!player) return [];
-
-    const equippedItems = [];
-
-    for (const inventoryItemId of offerItems) {
-      const invResponse = await fetch(`${BASE44_API_URL}/entities/PlayerInventory/${inventoryItemId}`, {
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${BASE44_SERVICE_KEY}`,
-        },
-      });
-
-      if (!invResponse.ok) continue;
-      
-      const invItem = await invResponse.json();
-      const itemDetails = itemsMap.get(invItem.item_id);
-      
-      if (!itemDetails) continue;
-
-      const itemCode = itemDetails.item_code;
-      const itemType = itemDetails.type;
-
-      let isEquipped = false;
-      let equipmentSlot = null;
-
-      switch (itemType) {
-        case 'hair':
-          if (player.equipment.equipped_hair === itemCode) {
-            isEquipped = true;
-            equipmentSlot = 'equipped_hair';
-          }
-          break;
-        case 'top':
-          if (player.equipment.equipped_top === itemCode) {
-            isEquipped = true;
-            equipmentSlot = 'equipped_top';
-          }
-          break;
-        case 'pants':
-          if (player.equipment.equipped_pants === itemCode) {
-            isEquipped = true;
-            equipmentSlot = 'equipped_pants';
-          }
-          break;
-        case 'gloves':
-          if (player.equipment.equipped_gloves === itemCode) {
-            isEquipped = true;
-            equipmentSlot = 'equipped_gloves';
-          }
-          break;
-        case 'hat':
-          if (player.equipment.equipped_hat === itemCode) {
-            isEquipped = true;
-            equipmentSlot = 'equipped_hat';
-          }
-          break;
-        case 'face':
-          if (player.equipment.equipped_face === itemCode) {
-            isEquipped = true;
-            equipmentSlot = 'equipped_face';
-          }
-          break;
-        case 'necklace':
-          if (player.equipment.equipped_necklace === itemCode) {
-            isEquipped = true;
-            equipmentSlot = 'equipped_necklace';
-          }
-          break;
-        case 'halo':
-          if (player.equipment.equipped_halo === itemCode) {
-            isEquipped = true;
-            equipmentSlot = 'equipped_halo';
-          }
-          break;
-        case 'shoes':
-          if (player.equipment.equipped_shoes === itemCode) {
-            isEquipped = true;
-            equipmentSlot = 'equipped_shoes';
-          }
-          break;
-        case 'accessory':
-          if (player.equipment.equipped_accessory === itemCode) {
-            isEquipped = true;
-            equipmentSlot = 'equipped_accessory';
-          }
-          break;
-      }
-
-      if (isEquipped) {
-        equippedItems.push({
-          inventoryItemId,
-          itemCode,
-          itemType,
-          equipmentSlot,
-        });
-      }
-    }
-
-    return equippedItems;
-  } catch (error) {
-    console.error("Error checking equipped items:", error);
-    return [];
-  }
-}
-
-async function removeEquippedItems(playerId, equippedItems) {
-  const socketId = getSocketIdByPlayerId(playerId);
-  if (!socketId) return;
-
-  const player = players.get(socketId);
-  if (!player) return;
-
-  const updates = {};
-  
-  for (const item of equippedItems) {
-    if (item.equipmentSlot && player.equipment[item.equipmentSlot]) {
-      console.log(`🔧 Removing ${item.equipmentSlot} (${item.itemCode}) from ${player.username}`);
-      player.equipment[item.equipmentSlot] = null;
-      updates[item.equipmentSlot] = null;
-    }
-  }
-
-  if (Object.keys(updates).length > 0) {
-    try {
-      await fetch(`${BASE44_API_URL}/entities/Player/${playerId}`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${BASE44_SERVICE_KEY}`,
-        },
-        body: JSON.stringify(updates),
-      });
-      console.log(`💾 Updated DB for ${player.username}:`, updates);
-    } catch (error) {
-      console.error(`❌ Failed to update DB for ${player.username}:`, error);
-    }
   }
 }
 
@@ -419,41 +186,14 @@ async function executeTradeOnBase44(trade) {
   }
 }
 
-function broadcastTradeUpdate(tradeId, io) {
+function broadcastTradeStatus(tradeId, status, reason = null) {
   const trade = activeTrades.get(tradeId);
   if (!trade) return;
-  
   const initSid = getSocketIdByPlayerId(trade.initiatorId);
   const recvSid = getSocketIdByPlayerId(trade.receiverId);
-  
-  const initiatorPlayer = players.get(initSid);
-  const receiverPlayer = players.get(recvSid);
-  
-  const payload = {
-    id: tradeId,
-    status: trade.status,
-    initiator: {
-      id: trade.initiatorId,
-      username: initiatorPlayer?.username || "Unknown",
-      ready: trade.initiator_ready || false,
-      equipment: initiatorPlayer?.equipment || {},
-    },
-    receiver: {
-      id: trade.receiverId,
-      username: receiverPlayer?.username || "Unknown",
-      ready: trade.receiver_ready || false,
-      equipment: receiverPlayer?.equipment || {},
-    },
-    initiator_offer: trade.initiator_offer,
-    receiver_offer: trade.receiver_offer,
-  };
-  
-  if (initSid) {
-    io.to(initSid).emit("trade_status_updated", payload);
-  }
-  if (recvSid) {
-    io.to(recvSid).emit("trade_status_updated", payload);
-  }
+  const payload = { tradeId, status, reason };
+  if (initSid) io.to(initSid).emit("trade_status_updated", payload);
+  if (recvSid) io.to(recvSid).emit("trade_status_updated", payload);
 }
 
 // ---------- Health ----------
@@ -474,22 +214,8 @@ app.get("/health", (req, res) => {
       user: p.username,
       area: p.current_area,
       invisible: p.is_invisible,
-      keepAway: p.keep_away_mode,
     })),
   });
-});
-
-// ---------- Broadcast Config Endpoint ----------
-app.post("/broadcast-config", (req, res) => {
-  const key = req.headers["x-health-key"];
-  if (key !== HEALTH_KEY) return res.status(403).json({ ok: false });
-  
-  const { type } = req.body;
-  console.log(`⚙️ Broadcasting config update: ${type}`);
-  
-  io.emit("config_refresh_required", { type });
-  
-  res.json({ ok: true, broadcasted: true });
 });
 
 // ---------- Socket.IO ----------
@@ -512,8 +238,8 @@ io.on("connection", async (socket) => {
     return;
   }
 
-  const playerData = await verifyTokenWithBase44(token);
-  if (!playerData) {
+  const user = await verifyTokenWithBase44(token);
+  if (!user) {
     socket.emit("disconnect_reason", "invalid_token");
     socket.disconnect(true);
     return;
@@ -521,7 +247,7 @@ io.on("connection", async (socket) => {
 
   // Kick duplicate
   for (const [sid, p] of players.entries()) {
-    if (p.playerId === playerData.playerId && sid !== socket.id) {
+    if (p.playerId === user.playerId && sid !== socket.id) {
       console.log(`⚠️ Kicking duplicate session for ${p.username}`);
       io.to(sid).emit("disconnect_reason", "logged_in_elsewhere");
       io.sockets.sockets.get(sid)?.disconnect(true);
@@ -532,23 +258,24 @@ io.on("connection", async (socket) => {
   // Register player
   const player = {
     socketId: socket.id,
-    playerId: playerData.playerId,
-    username: playerData.username,
-    display_name: playerData.display_name,
-    admin_level: playerData.admin_level,
-    current_area: playerData.current_area || "betach",
-    equipment: playerData.equipment || {},
-    position_x: playerData.position_x ?? 600,
-    position_y: playerData.position_y ?? 400,
-    direction: playerData.direction || "front",
+    playerId: user.playerId,
+    userId: user.userId,
+    username: user.username,
+    admin_level: user.admin_level,
+    current_area: user.current_area || "betach",
+    equipment: user.equipment || {},
+    position_x: user.position_x ?? 600,
+    position_y: user.position_y ?? 400,
+    direction: user.direction || "front",
     is_moving: false,
     animation_frame: "idle",
     destination_x: undefined,
     destination_y: undefined,
-    is_invisible: playerData.is_invisible ?? false,
-    keep_away_mode: playerData.keep_away_mode ?? false,
-    activeTradeId: null,
+    is_invisible: user.is_invisible ?? false, // ✅ הוספתי!
+    keep_away_mode: user.keep_away_mode ?? false,
     _lastMoveLogAt: 0,
+    _tokenJTI: user.jti,
+    _tokenIAT: user.iat,
   };
 
   players.set(socket.id, player);
@@ -560,47 +287,17 @@ io.on("connection", async (socket) => {
 
   socket.emit("identify_ok", safePlayerView(player));
   socket.emit("current_players", areaPeers);
-  
-  // SYNC DONUTS (In-Memory)
-  const currentDonuts = donutManager.getDonutsForArea(player.current_area);
-  socket.emit("donuts_sync", currentDonuts);
-
   socket.to(player.current_area).emit("player_joined", safePlayerView(player));
 
-  console.log(`🟢 Connected: ${player.username} (${player.current_area})`);
-
-  // ========== DONUT SYSTEM ==========
-  if (donutManager && typeof donutManager.setupSocketHandlers === 'function') {
-      donutManager.setupSocketHandlers(socket, players);
-  }
+  console.log(`🟢 Connected: ${player.username} (${player.current_area}) | Socket: ${socket.id.substring(0, 8)}... | Invisible: ${player.is_invisible}`);
 
   // ========== MOVE_TO ==========
   socket.on("move_to", (data = {}) => {
     const p = players.get(socket.id);
     if (!p) return;
 
-    let { x, y } = data;
+    const { x, y } = data;
     if (typeof x !== "number" || typeof y !== "number") return;
-
-    if (p.admin_level === 'user') {
-      const adminsInArea = Array.from(players.values()).filter(
-        admin => admin.current_area === p.current_area && 
-                admin.admin_level === 'admin' && 
-                admin.keep_away_mode === true
-      );
-
-      for (const admin of adminsInArea) {
-        const distanceToAdmin = calculateDistance(x, y, admin.position_x, admin.position_y);
-        
-        if (distanceToAdmin < KEEP_AWAY_RADIUS) {
-          socket.emit("keep_away_blocked", {
-            message: `לא ניתן להתקרב למנהל ${admin.username}`,
-            admin_username: admin.username
-          });
-          return;
-        }
-      }
-    }
 
     p.destination_x = x;
     p.destination_y = y;
@@ -612,6 +309,12 @@ io.on("connection", async (socket) => {
       p.direction = dx > 0 ? "e" : "w";
     } else if (Math.abs(dy) > 0) {
       p.direction = dy > 0 ? "s" : "n";
+    }
+
+    const t = now();
+    if (!p._lastMoveLogAt || t - p._lastMoveLogAt > 3000) {
+      console.log(`🚶 ${p.username} → target:(${Math.round(x)}, ${Math.round(y)}) | ${p.current_area}`);
+      p._lastMoveLogAt = t;
     }
   });
 
@@ -627,48 +330,20 @@ io.on("connection", async (socket) => {
     if (typeof data.animation_frame === "string") p.animation_frame = data.animation_frame;
     if (data.equipment && typeof data.equipment === "object") p.equipment = data.equipment;
     
+    // ✅ עדכון מצב התגנבות!
     if (typeof data.is_invisible === "boolean") {
       p.is_invisible = data.is_invisible;
+      console.log(`👻 ${p.username} invisibility: ${data.is_invisible}`);
     }
 
-    if (typeof data.keep_away_mode === "boolean") {
-      p.keep_away_mode = data.keep_away_mode;
-      
-      if (data.keep_away_mode && p.admin_level === 'admin') {
-        pushAwayNearbyPlayers(p, p.current_area, io);
-      }
-    }
-
+    // ✅ שדר את העדכון לכל השחקנים באזור
     io.to(p.current_area).emit("player_update", {
       id: p.playerId,
       playerId: p.playerId,
       socketId: p.socketId,
       equipment: p.equipment,
-      is_invisible: p.is_invisible,
+      is_invisible: p.is_invisible, // ✅ הוספתי!
     });
-  });
-
-  // ========== ADMIN_KICK_PLAYER ==========
-  socket.on("admin_kick_player", (data = {}) => {
-    const admin = players.get(socket.id);
-    if (!admin || admin.admin_level !== 'admin') return;
-
-    const targetPlayerId = data.target_player_id;
-    if (!targetPlayerId) return;
-
-    const targetSocketId = getSocketIdByPlayerId(targetPlayerId);
-    if (!targetSocketId) return;
-
-    const targetPlayer = players.get(targetSocketId);
-    if (!targetPlayer) return;
-
-    console.log(`👢 Admin ${admin.username} kicked ${targetPlayer.username}`);
-    io.to(targetSocketId).emit("kicked_by_admin");
-    
-    setTimeout(() => {
-      io.sockets.sockets.get(targetSocketId)?.disconnect(true);
-      players.delete(targetSocketId);
-    }, 1000);
   });
 
   // ========== CHAT_MESSAGE ==========
@@ -697,23 +372,14 @@ io.on("connection", async (socket) => {
     };
 
     io.to(p.current_area).emit("chat_message", payload);
-  });
-
-  // ========== ADMIN_CONFIG_UPDATED ==========
-  socket.on("admin_config_updated", (data = {}) => {
-    const adminPlayer = players.get(socket.id);
-    if (!adminPlayer) return;
-    if (!["admin", "senior_touch"].includes(adminPlayer.admin_level)) return;
-
-    console.log(`⚙️ Admin ${adminPlayer.username} updated config: ${data.type}`);
-    
-    io.emit("config_refresh_required", { type: data.type });
+    console.log(`💬 [${p.current_area}] ${p.username}: ${msg}`);
   });
 
   // ========== ADMIN_SYSTEM_MESSAGE ==========
   socket.on("admin_system_message", (messageData = {}) => {
     const adminPlayer = players.get(socket.id);
     if (!adminPlayer) return;
+
     if (!["admin", "senior_touch"].includes(adminPlayer.admin_level)) return;
 
     const payload = {
@@ -727,8 +393,10 @@ io.on("connection", async (socket) => {
     const target = messageData.target_area || "all";
     if (target === "current") {
       io.to(adminPlayer.current_area).emit("chat_message", payload);
+      console.log(`📢 [SYSTEM current:${adminPlayer.current_area}] ${payload.message}`);
     } else {
       io.emit("chat_message", payload);
+      console.log(`📢 [SYSTEM all] ${payload.message}`);
     }
   });
 
@@ -741,9 +409,12 @@ io.on("connection", async (socket) => {
     if (!newArea || newArea === p.current_area) return;
 
     const oldArea = p.current_area;
+
     socket.leave(oldArea);
     p.current_area = newArea;
     socket.join(newArea);
+
+    console.log(`🚪 ${p.username} moved: ${oldArea} → ${newArea}`);
 
     socket.to(oldArea).emit("player_area_changed", { id: p.playerId, playerId: p.playerId });
 
@@ -753,251 +424,46 @@ io.on("connection", async (socket) => {
 
     socket.emit("current_players", peers);
     socket.to(newArea).emit("player_joined", safePlayerView(p));
-
-    // SYNC DONUTS (In-Memory)
-    const currentDonuts = donutManager.getDonutsForArea(newArea);
-    socket.emit("donuts_sync", currentDonuts);
   });
 
-  // ========== TRADE REQUEST ==========
+  // ========== TRADE ==========
   socket.on("trade_request", (data = {}) => {
     const initiator = players.get(socket.id);
     if (!initiator) return;
 
-    const receiverId = data?.receiver?.id;
-    if (!receiverId) return;
-
-    const recvSid = getSocketIdByPlayerId(receiverId);
+    const recvSid = getSocketIdByPlayerId(data?.receiver?.id);
     if (!recvSid) return;
 
-    const receiver = players.get(recvSid);
-    if (!receiver) return;
-
     const tradeId = `trade_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-    
     const trade = {
       id: tradeId,
       initiatorId: initiator.playerId,
-      receiverId: receiver.playerId,
+      receiverId: players.get(recvSid)?.playerId,
       initiator_offer: { items: [], coins: 0, gems: 0 },
       receiver_offer: { items: [], coins: 0, gems: 0 },
-      initiator_ready: false,
-      receiver_ready: false,
       status: "pending",
     };
-    
     activeTrades.set(tradeId, trade);
-    initiator.activeTradeId = tradeId;
-    receiver.activeTradeId = tradeId;
-
-    console.log(`🔄 Trade Request: ${initiator.username} → ${receiver.username} (${tradeId})`);
 
     io.to(recvSid).emit("trade_request_received", {
       trade_id: tradeId,
-      initiator: {
-        id: initiator.playerId,
-        username: initiator.username,
-        equipment: initiator.equipment,
-      },
+      initiator: safePlayerView(initiator),
     });
   });
 
-  // ========== TRADE ACCEPT ==========
-  socket.on("trade_accept", (data = {}) => {
-    const trade = activeTrades.get(data.trade_id);
+  socket.on("trade_accept", ({ trade_id } = {}) => {
+    const trade = activeTrades.get(trade_id);
     if (!trade) return;
-
     trade.status = "started";
-    console.log(`✅ Trade Accepted: ${data.trade_id}`);
-    broadcastTradeUpdate(data.trade_id, io);
+    broadcastTradeStatus(trade_id, "started");
   });
 
-  // ========== TRADE OFFER UPDATE ==========
-  socket.on("trade_offer_update", (data = {}) => {
-    const p = players.get(socket.id);
-    if (!p) return;
-
-    const trade = activeTrades.get(data.trade_id);
+  socket.on("trade_cancel", ({ trade_id, reason } = {}) => {
+    const trade = activeTrades.get(trade_id);
     if (!trade) return;
-
-    if (trade.initiatorId === p.playerId) {
-      trade.initiator_offer = {
-        items: data.offer?.items || [],
-        coins: data.offer?.coins || 0,
-        gems: data.offer?.gems || 0,
-      };
-      trade.initiator_ready = false;
-      console.log(`🔄 ${p.username} updated offer: ${trade.initiator_offer.items.length} items, ${trade.initiator_offer.coins} coins`);
-    } else if (trade.receiverId === p.playerId) {
-      trade.receiver_offer = {
-        items: data.offer?.items || [],
-        coins: data.offer?.coins || 0,
-        gems: data.offer?.gems || 0,
-      };
-      trade.receiver_ready = false;
-      console.log(`🔄 ${p.username} updated offer: ${trade.receiver_offer.items.length} items, ${trade.receiver_offer.coins} coins`);
-    }
-
-    broadcastTradeUpdate(data.trade_id, io);
-  });
-
-  // ========== TRADE READY UPDATE ==========
-  socket.on("trade_ready_update", async (data = {}) => {
-    const p = players.get(socket.id);
-    if (!p) return;
-
-    const trade = activeTrades.get(data.trade_id);
-    if (!trade) return;
-
-    if (trade.initiatorId === p.playerId) {
-      trade.initiator_ready = data.ready;
-      console.log(`${data.ready ? '✅' : '❌'} ${p.username} ready: ${data.ready}`);
-    } else if (trade.receiverId === p.playerId) {
-      trade.receiver_ready = data.ready;
-      console.log(`${data.ready ? '✅' : '❌'} ${p.username} ready: ${data.ready}`);
-    }
-
-    broadcastTradeUpdate(data.trade_id, io);
-
-    if (trade.initiator_ready && trade.receiver_ready) {
-      console.log(`🎉 Executing trade ${data.trade_id}...`);
-      
-      trade.status = "executing";
-      broadcastTradeUpdate(data.trade_id, io);
-
-      const [initiatorEquipped, receiverEquipped] = await Promise.all([
-        getEquippedItemsFromOffer(trade.initiatorId, trade.initiator_offer.items),
-        getEquippedItemsFromOffer(trade.receiverId, trade.receiver_offer.items),
-      ]);
-
-      console.log(`👕 Initiator equipped items:`, initiatorEquipped.length);
-      console.log(`👕 Receiver equipped items:`, receiverEquipped.length);
-
-      executeTradeOnBase44(trade).then(async (result) => {
-        if (result.success) {
-          console.log(`✅ Trade Completed: ${data.trade_id}`);
-          
-          const initSid = getSocketIdByPlayerId(trade.initiatorId);
-          const recvSid = getSocketIdByPlayerId(trade.receiverId);
-          
-          await Promise.all([
-            removeEquippedItems(trade.initiatorId, initiatorEquipped),
-            removeEquippedItems(trade.receiverId, receiverEquipped),
-          ]);
-
-          const initiatorPlayer = players.get(initSid);
-          const receiverPlayer = players.get(recvSid);
-          
-          if (initSid) {
-            if (initiatorPlayer) {
-              initiatorPlayer.activeTradeId = null;
-              
-              if (initiatorEquipped.length > 0) {
-                io.to(initSid).emit("items_unequipped", {
-                  items: initiatorEquipped.map(i => i.equipmentSlot),
-                  equipment: initiatorPlayer.equipment,
-                });
-              }
-            }
-            io.to(initSid).emit("trade_completed_successfully", { trade_id: data.trade_id });
-          }
-          
-          if (recvSid) {
-            if (receiverPlayer) {
-              receiverPlayer.activeTradeId = null;
-              
-              if (receiverEquipped.length > 0) {
-                io.to(recvSid).emit("items_unequipped", {
-                  items: receiverEquipped.map(i => i.equipmentSlot),
-                  equipment: receiverPlayer.equipment,
-                });
-              }
-            }
-            io.to(recvSid).emit("trade_completed_successfully", { trade_id: data.trade_id });
-          }
-
-          if (initiatorPlayer && initiatorEquipped.length > 0) {
-            io.to(initiatorPlayer.current_area).emit("player_update", {
-              id: initiatorPlayer.playerId,
-              playerId: initiatorPlayer.playerId,
-              socketId: initSid,
-              equipment: initiatorPlayer.equipment,
-            });
-          }
-
-          if (receiverPlayer && receiverEquipped.length > 0) {
-            io.to(receiverPlayer.current_area).emit("player_update", {
-              id: receiverPlayer.playerId,
-              playerId: receiverPlayer.playerId,
-              socketId: recvSid,
-              equipment: receiverPlayer.equipment,
-            });
-          }
-          
-          activeTrades.delete(data.trade_id);
-        } else {
-          console.error(`❌ Trade Failed: ${data.trade_id} - ${result.error}`);
-          
-          trade.status = "failed";
-          const initSid = getSocketIdByPlayerId(trade.initiatorId);
-          const recvSid = getSocketIdByPlayerId(trade.receiverId);
-          
-          const errorPayload = {
-            id: data.trade_id,
-            status: "failed",
-            reason: result.error
-          };
-          
-          if (initSid) {
-            const initPlayer = players.get(initSid);
-            if (initPlayer) initPlayer.activeTradeId = null;
-            io.to(initSid).emit("trade_status_updated", errorPayload);
-          }
-          
-          if (recvSid) {
-            const recvPlayer = players.get(recvSid);
-            if (recvPlayer) recvPlayer.activeTradeId = null;
-            io.to(recvSid).emit("trade_status_updated", errorPayload);
-          }
-          
-          activeTrades.delete(data.trade_id);
-        }
-      });
-    }
-  });
-
-  // ========== TRADE CANCEL ==========
-  socket.on("trade_cancel", (data = {}) => {
-    const trade = activeTrades.get(data.trade_id);
-    if (!trade) return;
-
-    const p = players.get(socket.id);
-    console.log(`❌ Trade Cancelled: ${data.trade_id} by ${p?.username || 'unknown'}`);
-
-    const initSid = getSocketIdByPlayerId(trade.initiatorId);
-    const recvSid = getSocketIdByPlayerId(trade.receiverId);
-    
-    if (initSid) {
-      const initPlayer = players.get(initSid);
-      if (initPlayer) initPlayer.activeTradeId = null;
-      io.to(initSid).emit("trade_status_updated", {
-        id: data.trade_id,
-        status: "cancelled",
-        reason: data.reason || "cancelled"
-      });
-    }
-    
-    if (recvSid) {
-      const recvPlayer = players.get(recvSid);
-      if (recvPlayer) recvPlayer.activeTradeId = null;
-      io.to(recvSid).emit("trade_status_updated", {
-        id: data.trade_id,
-        status: "cancelled",
-        reason: data.reason || "cancelled"
-      });
-    }
-    
-    activeTrades.delete(data.trade_id);
+    trade.status = "cancelled";
+    broadcastTradeStatus(trade_id, "cancelled", reason || "cancelled");
+    activeTrades.delete(trade_id);
   });
 
   // ========== DISCONNECT ==========
@@ -1005,28 +471,16 @@ io.on("connection", async (socket) => {
     const p = players.get(socket.id);
     if (!p) return;
 
-    console.log(`🔴 Disconnect: ${p.username} | ${reason}`);
+    const jtiShort = p._tokenJTI ? p._tokenJTI.substring(0, 8) : 'N/A';
+    console.log(`🔴 Disconnect: ${p.username} (JTI: ${jtiShort}...) | reason=${reason}`);
     
     socket.to(p.current_area).emit("player_disconnected", p.playerId);
 
-    if (p.activeTradeId) {
-      const trade = activeTrades.get(p.activeTradeId);
-      if (trade) {
-        const otherPlayerId = trade.initiatorId === p.playerId ? trade.receiverId : trade.initiatorId;
-        const otherSid = getSocketIdByPlayerId(otherPlayerId);
-        
-        if (otherSid) {
-          const otherPlayer = players.get(otherSid);
-          if (otherPlayer) otherPlayer.activeTradeId = null;
-          
-          io.to(otherSid).emit("trade_status_updated", {
-            id: p.activeTradeId,
-            status: "cancelled",
-            reason: "participant_disconnected"
-          });
-        }
-        
-        activeTrades.delete(p.activeTradeId);
+    for (const [tid, t] of activeTrades.entries()) {
+      if (t.initiatorId === p.playerId || t.receiverId === p.playerId) {
+        t.status = "cancelled";
+        broadcastTradeStatus(tid, "cancelled", "participant_disconnected");
+        activeTrades.delete(tid);
       }
     }
 
@@ -1034,7 +488,7 @@ io.on("connection", async (socket) => {
   });
 });
 
-// ========== GAME LOOP ==========
+// ========== GAME LOOP - ⚡ מהיר יותר! ==========
 setInterval(() => {
   const updatesByArea = new Map();
 
@@ -1051,42 +505,10 @@ setInterval(() => {
         player.destination_x = undefined;
         player.destination_y = undefined;
       } else {
+        // ✅ מהירות מוגברת: 4 → 10 (פי 2.5 יותר מהיר!)
         const moveSpeed = 10;
         player.position_x += (dx / distance) * moveSpeed;
         player.position_y += (dy / distance) * moveSpeed;
-      }
-
-      if (player.admin_level === 'user') {
-        const adminsInArea = Array.from(players.values()).filter(
-          admin => admin.current_area === player.current_area && 
-                  admin.admin_level === 'admin' && 
-                  admin.keep_away_mode === true
-        );
-
-        for (const admin of adminsInArea) {
-          const distanceToAdmin = calculateDistance(
-            player.position_x,
-            player.position_y,
-            admin.position_x,
-            admin.position_y
-          );
-
-          if (distanceToAdmin < KEEP_AWAY_RADIUS) {
-            const safePos = calculateSafePosition(
-              player.position_x,
-              player.position_y,
-              admin.position_x,
-              admin.position_y,
-              KEEP_AWAY_RADIUS
-            );
-
-            player.position_x = safePos.x;
-            player.position_y = safePos.y;
-            player.is_moving = false;
-            player.destination_x = undefined;
-            player.destination_y = undefined;
-          }
-        }
       }
 
       const update = {
@@ -1098,7 +520,7 @@ setInterval(() => {
         direction: player.direction,
         is_moving: player.is_moving,
         animation_frame: player.is_moving ? "walk" : "idle",
-        is_invisible: player.is_invisible,
+        is_invisible: player.is_invisible, // ✅ הוספתי!
       };
 
       if (!updatesByArea.has(player.current_area)) {
@@ -1108,29 +530,86 @@ setInterval(() => {
     }
   }
 
+  // ✅ שלח עדכונים לפי אזור
   for (const [areaId, updates] of updatesByArea) {
     io.to(areaId).emit("players_moved", updates);
   }
 }, 50);
 
+// ========== AUTO AREA SCHEDULER - כל דקה ==========
+async function checkScheduledAreas() {
+  try {
+    const response = await fetch(`${BASE44_API_URL}/entities/Area`, {
+      headers: {
+        Authorization: `Bearer ${BASE44_SERVICE_KEY}`,
+      },
+    });
+
+    if (!response.ok) return;
+
+    const areas = await response.json();
+    const now = new Date();
+
+    for (const area of areas) {
+      if (!area.scheduled_activation_date || area.is_active) continue;
+
+      const scheduledDate = new Date(area.scheduled_activation_date);
+      
+      // אם הגיע הזמן
+      if (scheduledDate <= now) {
+        console.log(`⏰ Activating scheduled area: ${area.area_name} (${area.version_name})`);
+
+        // כבה את כל הגרסאות האחרות באותה תיקייה
+        const sameFolder = areas.filter(a => a.area_id === area.area_id && a.id !== area.id);
+        for (const other of sameFolder) {
+          if (other.is_active) {
+            await fetch(`${BASE44_API_URL}/entities/Area/${other.id}`, {
+              method: 'PATCH',
+              headers: {
+                Authorization: `Bearer ${BASE44_SERVICE_KEY}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ is_active: false }),
+            });
+          }
+        }
+
+        // הפעל את הגרסה המתוזמנת
+        await fetch(`${BASE44_API_URL}/entities/Area/${area.id}`, {
+          method: 'PATCH',
+          headers: {
+            Authorization: `Bearer ${BASE44_SERVICE_KEY}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ 
+            is_active: true,
+            scheduled_activation_date: null 
+          }),
+        });
+
+        console.log(`✅ Area activated: ${area.area_name}`);
+      }
+    }
+  } catch (error) {
+    console.error('❌ Area scheduler error:', error.message);
+  }
+}
+
+// הרץ כל דקה
+setInterval(checkScheduledAreas, 60000);
+// בדיקה ראשונית אחרי 10 שניות
+setTimeout(checkScheduledAreas, 10000);
+
 // ---------- Start ----------
 httpServer.listen(PORT, () => {
   console.log(`\n${"★".repeat(60)}`);
   console.log(`🚀 Touch World Server v${VERSION} - Port ${PORT}`);
-  console.log(`✅ PLAYER-ONLY SYSTEM - NO BASE44 USERS!`);
-  console.log(`✅ CUSTOM JWT AUTHENTICATION!`);
-  console.log(`✅ TRADE SYSTEM with EQUIPMENT REMOVAL + DB UPDATE!`);
-  console.log(`✅ ADMIN MODERATION enabled!`);
-  console.log(`👻 STEALTH MODE enabled!`);
-  console.log(`🚫 KEEP-AWAY MODE: ${KEEP_AWAY_RADIUS}px!`);
-  console.log(`💬 CHAT BUBBLE SYNC enabled!`);
-  console.log(`🍩 Donut System Integration!`);
+  console.log(`✅ STEALTH MODE: Invisibility sync enabled!`);
+  console.log(`⚡ Move Speed: 10 (was 4)`);
+  console.log(`🎮 Game Loop: 20 FPS (50ms)`);
+  console.log(`🔐 JWT Rotation: ENABLED`);
+  console.log(`👻 Admin Stealth: ACTIVE`);
+  console.log(`⏰ Area Scheduler: ACTIVE (60s interval)`);
+  console.log(`🌍 https://touchworld-realtime.onrender.com`);
   console.log(`${"★".repeat(60)}\n`);
-  
-  // ========== DONUT SYSTEM INIT ==========
-  if (donutManager && typeof donutManager.initialize === 'function') {
-      donutManager.initialize(io, BASE44_SERVICE_KEY, BASE44_API_URL);
-  } else {
-      console.error('❌ Donut Manager Initialize function NOT FOUND!');
-  }
 });
