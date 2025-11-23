@@ -108,6 +108,7 @@ function normalizePlayerShape(playerData) {
       equipped_halo: playerData?.equipped_halo,
       equipped_shoes: playerData?.equipped_shoes,
       equipped_gloves: playerData?.equipped_gloves,
+      equipped_face: playerData?.equipped_face,
       equipped_accessory: playerData?.equipped_accessory,
       ...(playerData?.equipment || {}),
     },
@@ -306,6 +307,12 @@ async function getEquippedItemsFromOffer(playerId, offerItems) {
           if (player.equipment.equipped_hat === itemCode) {
             isEquipped = true;
             equipmentSlot = 'equipped_hat';
+          }
+          break;
+        case 'face':
+          if (player.equipment.equipped_face === itemCode) {
+            isEquipped = true;
+            equipmentSlot = 'equipped_face';
           }
           break;
         case 'necklace':
