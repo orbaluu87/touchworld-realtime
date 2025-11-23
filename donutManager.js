@@ -147,8 +147,10 @@ async function processArea(area) {
         }
     }
     
-    // Logic: Spawn always (No limit)
-    spawnDonut(area, templates);
+    // Logic: Limit to 8 donuts per area
+    if (validVersionDonuts.length < 8) {
+        spawnDonut(area, templates);
+    }
 }
 
 function spawnDonut(area, templates) {
