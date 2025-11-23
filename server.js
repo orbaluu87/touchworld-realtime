@@ -96,7 +96,7 @@ function normalizePlayerShape(playerData) {
     playerId,
     username: playerData?.username ?? "Guest",
     display_name: playerData?.display_name,
-    current_area: playerData?.current_area ?? "area1",
+    current_area: playerData?.current_area ?? "betach",
     admin_level: playerData?.admin_level ?? "user",
     equipment: {
       skin_code: playerData?.skin_code,
@@ -529,7 +529,7 @@ io.on("connection", async (socket) => {
     username: playerData.username,
     display_name: playerData.display_name,
     admin_level: playerData.admin_level,
-    current_area: playerData.current_area || "area1",
+    current_area: playerData.current_area || "betach",
     equipment: playerData.equipment || {},
     position_x: playerData.position_x ?? 600,
     position_y: playerData.position_y ?? 400,
