@@ -1,4 +1,6 @@
-export default function setupSystemRoutes(app, io, players, BASE44_SERVICE_KEY, getSocketIdByPlayerId) {
+// functions/systemRoutes.js
+
+module.exports = function setupSystemRoutes(app, io, players, BASE44_SERVICE_KEY, getSocketIdByPlayerId) {
   // ---------- System Updates ----------
   app.post("/system/update_player", (req, res) => {
     const authHeader = req.headers.authorization;
@@ -37,4 +39,4 @@ export default function setupSystemRoutes(app, io, players, BASE44_SERVICE_KEY, 
     
     return res.json({ success: true, updated: false, message: "Player not connected" });
   });
-}
+};
