@@ -51,7 +51,7 @@ if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   process.exit(1);
 }
 
-const VERSION = "11.7.0"; // Slow Donut Spawning Cycle
+const VERSION = "11.7.1"; // System Routes Fix
 
 // ---------- State ----------
 const players = new Map();
@@ -464,8 +464,7 @@ function broadcastTradeUpdate(tradeId, io) {
   }
 }
 
-// ---------- Setup System Routes ----------
-setupSystemRoutes(app, io, players, BASE44_SERVICE_KEY, getSocketIdByPlayerId); // ✅ Initialize
+
 
 // ---------- Health ----------
 app.get("/healthz", (_req, res) => {
@@ -513,6 +512,9 @@ const io = new Server(httpServer, {
   pingTimeout: 60000,
   pingInterval: 25000,
 });
+
+// ---------- Setup System Routes ----------
+setupSystemRoutes(app, io, players, BASE44_SERVICE_KEY, getSocketIdByPlayerId); // ✅ Initialize
 
 // ---------- Connection ----------
 io.on("connection", async (socket) => {
