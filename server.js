@@ -1060,6 +1060,29 @@ setInterval(() => {
       const dy = player.destination_y - player.position_y;
       const distance = Math.sqrt(dx * dx + dy * dy);
 
+      // Check Potion Expiry
+      if (player.active_transformation_expires_at && now() > new Date(player.active_transformation_expires_at).getTime()) {
+          // Reset Effects
+          if (player.active_transformation_settings?.invisible) {
+              player.is_invisible = false;
+          }
+          
+          player.active_transformation_settings = null;
+          player.active_transformation_image_url = null;
+          player.active_transformation_expires_at = null;
+          
+          // Broadcast expiry immediately to keep clients in sync
+          io.to(player.current_area).emit("player_update", {
+              id: player.playerId,
+              playerId: player.playerId,
+              socketId: sid,
+              is_invisible: player.is_invisible,
+              active_transformation_settings: null,
+              active_transformation_image_url: null,
+              active_transformation_expires_at: null
+          });
+      }
+
       if (distance < 5) {
         player.position_x = player.destination_x;
         player.position_y = player.destination_y;
@@ -1067,7 +1090,13 @@ setInterval(() => {
         player.destination_x = undefined;
         player.destination_y = undefined;
       } else {
-        const moveSpeed = 10;
+        let moveSpeed = 10;
+        
+        // Apply Speed Potion
+        if (player.active_transformation_settings?.speed) {
+            moveSpeed *= player.active_transformation_settings.speed;
+        }
+
         player.position_x += (dx / distance) * moveSpeed;
         player.position_y += (dy / distance) * moveSpeed;
       }
