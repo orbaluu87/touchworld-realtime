@@ -757,6 +757,17 @@ io.on("connection", async (socket) => {
     if (!newArea || newArea === p.current_area) return;
 
     const oldArea = p.current_area;
+    
+    // Clear Potion Effects on Area Change (Mutual Exclusivity / Reset)
+    p.active_transformation_image_url = null;
+    p.active_transformation_settings = null;
+    p.active_transformation_expires_at = null;
+    // Only reset invisibility if it was from a potion (indicated by expire time), 
+    // otherwise keep it (if set by admin tool)
+    if (p.is_invisible && p.active_transformation_expires_at) {
+         p.is_invisible = false;
+    }
+
     socket.leave(oldArea);
     p.current_area = newArea;
     socket.join(newArea);
