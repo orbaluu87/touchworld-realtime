@@ -1,5 +1,3 @@
-const setupSystemRoutes = require("./systemRoutes"); // ✅ Import the routes
-
 // ============================================================================
 // Touch World - Socket Server v11.3.0 - PLAYER-ONLY SYSTEM + DONUT SYNC FIXED
 // ============================================================================
@@ -51,7 +49,7 @@ if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   process.exit(1);
 }
 
-const VERSION = "11.7.1"; // System Routes Fix
+const VERSION = "11.7.0"; // Slow Donut Spawning Cycle
 
 // ---------- State ----------
 const players = new Map();
@@ -81,9 +79,6 @@ function safePlayerView(p) {
     move_speed: 120,
     is_trading: !!p.activeTradeId,
     is_invisible: !!p.is_invisible,
-    active_transformation_image_url: p.active_transformation_image_url,
-    active_transformation_settings: p.active_transformation_settings,
-    active_transformation_expires_at: p.active_transformation_expires_at,
   };
 }
 
@@ -122,9 +117,6 @@ function normalizePlayerShape(playerData) {
     direction: playerData?.direction ?? "front",
     keep_away_mode: !!playerData?.keep_away_mode,
     is_invisible: !!playerData?.is_invisible,
-    active_transformation_image_url: playerData?.active_transformation_image_url,
-    active_transformation_settings: playerData?.active_transformation_settings,
-    active_transformation_expires_at: playerData?.active_transformation_expires_at,
     level: playerData?.level || 1,
     xp: playerData?.xp || 0,
     coins: playerData?.coins || 500,
@@ -443,13 +435,15 @@ function broadcastTradeUpdate(tradeId, io) {
     initiator: {
       id: trade.initiatorId,
       username: initiatorPlayer?.username || "Unknown",
-      ready: trade.initiator_ready || false,
+      locked: trade.initiator_locked || false,
+      confirmed: trade.initiator_confirmed || false,
       equipment: initiatorPlayer?.equipment || {},
     },
     receiver: {
       id: trade.receiverId,
       username: receiverPlayer?.username || "Unknown",
-      ready: trade.receiver_ready || false,
+      locked: trade.receiver_locked || false,
+      confirmed: trade.receiver_confirmed || false,
       equipment: receiverPlayer?.equipment || {},
     },
     initiator_offer: trade.initiator_offer,
@@ -463,8 +457,6 @@ function broadcastTradeUpdate(tradeId, io) {
     io.to(recvSid).emit("trade_status_updated", payload);
   }
 }
-
-
 
 // ---------- Health ----------
 app.get("/healthz", (_req, res) => {
@@ -513,9 +505,6 @@ const io = new Server(httpServer, {
   pingInterval: 25000,
 });
 
-// ---------- Setup System Routes ----------
-setupSystemRoutes(app, io, players, BASE44_SERVICE_KEY, getSocketIdByPlayerId); // ✅ Initialize
-
 // ---------- Connection ----------
 io.on("connection", async (socket) => {
   const token = socket.handshake.auth?.token;
@@ -562,9 +551,6 @@ io.on("connection", async (socket) => {
     keep_away_mode: playerData.keep_away_mode ?? false,
     activeTradeId: null,
     _lastMoveLogAt: 0,
-    active_transformation_image_url: playerData.active_transformation_image_url,
-    active_transformation_settings: playerData.active_transformation_settings,
-    active_transformation_expires_at: playerData.active_transformation_expires_at,
   };
 
   players.set(socket.id, player);
@@ -757,17 +743,6 @@ io.on("connection", async (socket) => {
     if (!newArea || newArea === p.current_area) return;
 
     const oldArea = p.current_area;
-    
-    // Clear Potion Effects on Area Change (Mutual Exclusivity / Reset)
-    p.active_transformation_image_url = null;
-    p.active_transformation_settings = null;
-    p.active_transformation_expires_at = null;
-    // Only reset invisibility if it was from a potion (indicated by expire time), 
-    // otherwise keep it (if set by admin tool)
-    if (p.is_invisible && p.active_transformation_expires_at) {
-         p.is_invisible = false;
-    }
-
     socket.leave(oldArea);
     p.current_area = newArea;
     socket.join(newArea);
@@ -808,8 +783,10 @@ io.on("connection", async (socket) => {
       receiverId: receiver.playerId,
       initiator_offer: { items: [], coins: 0, gems: 0 },
       receiver_offer: { items: [], coins: 0, gems: 0 },
-      initiator_ready: false,
-      receiver_ready: false,
+      initiator_locked: false,
+      receiver_locked: false,
+      initiator_confirmed: false,
+      receiver_confirmed: false,
       status: "pending",
     };
     
@@ -848,28 +825,34 @@ io.on("connection", async (socket) => {
     if (!trade) return;
 
     if (trade.initiatorId === p.playerId) {
+      if (trade.initiator_locked) return; // Prevent updates if locked
       trade.initiator_offer = {
         items: data.offer?.items || [],
         coins: data.offer?.coins || 0,
         gems: data.offer?.gems || 0,
       };
-      trade.initiator_ready = false;
+      // Reset confirmation if offer changes (though it shouldn't if locked)
+      trade.initiator_confirmed = false;
+      trade.receiver_confirmed = false;
       console.log(`🔄 ${p.username} updated offer: ${trade.initiator_offer.items.length} items, ${trade.initiator_offer.coins} coins`);
     } else if (trade.receiverId === p.playerId) {
+      if (trade.receiver_locked) return; // Prevent updates if locked
       trade.receiver_offer = {
         items: data.offer?.items || [],
         coins: data.offer?.coins || 0,
         gems: data.offer?.gems || 0,
       };
-      trade.receiver_ready = false;
+      // Reset confirmation if offer changes
+      trade.initiator_confirmed = false;
+      trade.receiver_confirmed = false;
       console.log(`🔄 ${p.username} updated offer: ${trade.receiver_offer.items.length} items, ${trade.receiver_offer.coins} coins`);
     }
 
     broadcastTradeUpdate(data.trade_id, io);
   });
 
-  // ========== TRADE READY UPDATE ==========
-  socket.on("trade_ready_update", async (data = {}) => {
+  // ========== TRADE LOCK UPDATE ==========
+  socket.on("trade_lock_update", (data = {}) => {
     const p = players.get(socket.id);
     if (!p) return;
 
@@ -877,16 +860,48 @@ io.on("connection", async (socket) => {
     if (!trade) return;
 
     if (trade.initiatorId === p.playerId) {
-      trade.initiator_ready = data.ready;
-      console.log(`${data.ready ? '✅' : '❌'} ${p.username} ready: ${data.ready}`);
+      trade.initiator_locked = data.locked;
+      // If unlocking, also reset confirmations
+      if (!data.locked) {
+        trade.initiator_confirmed = false;
+        trade.receiver_confirmed = false;
+      }
+      console.log(`🔒 ${p.username} locked: ${data.locked}`);
     } else if (trade.receiverId === p.playerId) {
-      trade.receiver_ready = data.ready;
-      console.log(`${data.ready ? '✅' : '❌'} ${p.username} ready: ${data.ready}`);
+      trade.receiver_locked = data.locked;
+      // If unlocking, also reset confirmations
+      if (!data.locked) {
+        trade.initiator_confirmed = false;
+        trade.receiver_confirmed = false;
+      }
+      console.log(`🔒 ${p.username} locked: ${data.locked}`);
+    }
+
+    broadcastTradeUpdate(data.trade_id, io);
+  });
+
+  // ========== TRADE CONFIRM UPDATE ==========
+  socket.on("trade_confirm_update", async (data = {}) => {
+    const p = players.get(socket.id);
+    if (!p) return;
+
+    const trade = activeTrades.get(data.trade_id);
+    if (!trade) return;
+
+    // Can only confirm if both are locked
+    if (!trade.initiator_locked || !trade.receiver_locked) return;
+
+    if (trade.initiatorId === p.playerId) {
+      trade.initiator_confirmed = data.confirmed;
+      console.log(`${data.confirmed ? '✅' : '❌'} ${p.username} confirmed: ${data.confirmed}`);
+    } else if (trade.receiverId === p.playerId) {
+      trade.receiver_confirmed = data.confirmed;
+      console.log(`${data.confirmed ? '✅' : '❌'} ${p.username} confirmed: ${data.confirmed}`);
     }
 
     broadcastTradeUpdate(data.trade_id, io);
 
-    if (trade.initiator_ready && trade.receiver_ready) {
+    if (trade.initiator_confirmed && trade.receiver_confirmed) {
       console.log(`🎉 Executing trade ${data.trade_id}...`);
       
       trade.status = "executing";
@@ -1071,29 +1086,6 @@ setInterval(() => {
       const dy = player.destination_y - player.position_y;
       const distance = Math.sqrt(dx * dx + dy * dy);
 
-      // Check Potion Expiry
-      if (player.active_transformation_expires_at && now() > new Date(player.active_transformation_expires_at).getTime()) {
-          // Reset Effects
-          if (player.active_transformation_settings?.invisible) {
-              player.is_invisible = false;
-          }
-          
-          player.active_transformation_settings = null;
-          player.active_transformation_image_url = null;
-          player.active_transformation_expires_at = null;
-          
-          // Broadcast expiry immediately to keep clients in sync
-          io.to(player.current_area).emit("player_update", {
-              id: player.playerId,
-              playerId: player.playerId,
-              socketId: sid,
-              is_invisible: player.is_invisible,
-              active_transformation_settings: null,
-              active_transformation_image_url: null,
-              active_transformation_expires_at: null
-          });
-      }
-
       if (distance < 5) {
         player.position_x = player.destination_x;
         player.position_y = player.destination_y;
@@ -1101,13 +1093,7 @@ setInterval(() => {
         player.destination_x = undefined;
         player.destination_y = undefined;
       } else {
-        let moveSpeed = 10;
-        
-        // Apply Speed Potion
-        if (player.active_transformation_settings?.speed) {
-            moveSpeed *= player.active_transformation_settings.speed;
-        }
-
+        const moveSpeed = 10;
         player.position_x += (dx / distance) * moveSpeed;
         player.position_y += (dy / distance) * moveSpeed;
       }
@@ -1155,9 +1141,6 @@ setInterval(() => {
         is_moving: player.is_moving,
         animation_frame: player.is_moving ? "walk" : "idle",
         is_invisible: player.is_invisible,
-        active_transformation_image_url: player.active_transformation_image_url,
-        active_transformation_settings: player.active_transformation_settings,
-        active_transformation_expires_at: player.active_transformation_expires_at,
       };
 
       if (!updatesByArea.has(player.current_area)) {
