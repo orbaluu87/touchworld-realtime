@@ -436,14 +436,14 @@ function broadcastTradeUpdate(tradeId, io) {
       id: trade.initiatorId,
       username: initiatorPlayer?.username || "Unknown",
       locked: trade.initiator_locked || false,
-      confirmed: trade.initiator_confirmed || false,
+      ready: trade.initiator_ready || false,
       equipment: initiatorPlayer?.equipment || {},
     },
     receiver: {
       id: trade.receiverId,
       username: receiverPlayer?.username || "Unknown",
       locked: trade.receiver_locked || false,
-      confirmed: trade.receiver_confirmed || false,
+      ready: trade.receiver_ready || false,
       equipment: receiverPlayer?.equipment || {},
     },
     initiator_offer: trade.initiator_offer,
@@ -785,8 +785,8 @@ io.on("connection", async (socket) => {
       receiver_offer: { items: [], coins: 0, gems: 0 },
       initiator_locked: false,
       receiver_locked: false,
-      initiator_confirmed: false,
-      receiver_confirmed: false,
+      initiator_ready: false,
+      receiver_ready: false,
       status: "pending",
     };
     
@@ -824,27 +824,25 @@ io.on("connection", async (socket) => {
     const trade = activeTrades.get(data.trade_id);
     if (!trade) return;
 
+    // SECURITY: If anyone changes the offer, reset ALL locks and confirmations
+    trade.initiator_locked = false;
+    trade.receiver_locked = false;
+    trade.initiator_ready = false;
+    trade.receiver_ready = false;
+
     if (trade.initiatorId === p.playerId) {
-      if (trade.initiator_locked) return; // Prevent updates if locked
       trade.initiator_offer = {
         items: data.offer?.items || [],
         coins: data.offer?.coins || 0,
         gems: data.offer?.gems || 0,
       };
-      // Reset confirmation if offer changes (though it shouldn't if locked)
-      trade.initiator_confirmed = false;
-      trade.receiver_confirmed = false;
       console.log(`🔄 ${p.username} updated offer: ${trade.initiator_offer.items.length} items, ${trade.initiator_offer.coins} coins`);
     } else if (trade.receiverId === p.playerId) {
-      if (trade.receiver_locked) return; // Prevent updates if locked
       trade.receiver_offer = {
         items: data.offer?.items || [],
         coins: data.offer?.coins || 0,
         gems: data.offer?.gems || 0,
       };
-      // Reset confirmation if offer changes
-      trade.initiator_confirmed = false;
-      trade.receiver_confirmed = false;
       console.log(`🔄 ${p.username} updated offer: ${trade.receiver_offer.items.length} items, ${trade.receiver_offer.coins} coins`);
     }
 
@@ -859,49 +857,55 @@ io.on("connection", async (socket) => {
     const trade = activeTrades.get(data.trade_id);
     if (!trade) return;
 
+    const isLocked = !!data.locked;
+
     if (trade.initiatorId === p.playerId) {
-      trade.initiator_locked = data.locked;
-      // If unlocking, also reset confirmations
-      if (!data.locked) {
-        trade.initiator_confirmed = false;
-        trade.receiver_confirmed = false;
-      }
-      console.log(`🔒 ${p.username} locked: ${data.locked}`);
+      trade.initiator_locked = isLocked;
+      // If unlocking, also remove ready status
+      if (!isLocked) trade.initiator_ready = false;
+      console.log(`🔒 ${p.username} locked: ${isLocked}`);
     } else if (trade.receiverId === p.playerId) {
-      trade.receiver_locked = data.locked;
-      // If unlocking, also reset confirmations
-      if (!data.locked) {
-        trade.initiator_confirmed = false;
-        trade.receiver_confirmed = false;
-      }
-      console.log(`🔒 ${p.username} locked: ${data.locked}`);
+      trade.receiver_locked = isLocked;
+      // If unlocking, also remove ready status
+      if (!isLocked) trade.receiver_ready = false;
+      console.log(`🔒 ${p.username} locked: ${isLocked}`);
     }
 
+    // If either unlocks, we must ensure neither is "ready" (final confirm) anymore to be safe,
+    // or at least the one who unlocked is not ready.
+    // For maximum safety: if one unlocks, the trade leaves the "Review" phase, so both ready flags should probably trigger a re-review?
+    // Standard practice: You can only be "Ready" if you are "Locked".
+    // If I unlock, I am not locked, so I cannot be ready.
+    // The other person can remain locked, but since one isn't locked, the trade cannot execute.
+    
     broadcastTradeUpdate(data.trade_id, io);
   });
 
-  // ========== TRADE CONFIRM UPDATE ==========
-  socket.on("trade_confirm_update", async (data = {}) => {
+  // ========== TRADE READY UPDATE ==========
+  socket.on("trade_ready_update", async (data = {}) => {
     const p = players.get(socket.id);
     if (!p) return;
 
     const trade = activeTrades.get(data.trade_id);
     if (!trade) return;
 
-    // Can only confirm if both are locked
-    if (!trade.initiator_locked || !trade.receiver_locked) return;
+    // SECURITY: Can only confirm if BOTH parties are locked
+    if (!trade.initiator_locked || !trade.receiver_locked) {
+      console.log(`⚠️ ${p.username} tried to confirm but trade is not fully locked.`);
+      return;
+    }
 
     if (trade.initiatorId === p.playerId) {
-      trade.initiator_confirmed = data.confirmed;
-      console.log(`${data.confirmed ? '✅' : '❌'} ${p.username} confirmed: ${data.confirmed}`);
+      trade.initiator_ready = data.ready;
+      console.log(`${data.ready ? '✅' : '❌'} ${p.username} confirmed: ${data.ready}`);
     } else if (trade.receiverId === p.playerId) {
-      trade.receiver_confirmed = data.confirmed;
-      console.log(`${data.confirmed ? '✅' : '❌'} ${p.username} confirmed: ${data.confirmed}`);
+      trade.receiver_ready = data.ready;
+      console.log(`${data.ready ? '✅' : '❌'} ${p.username} confirmed: ${data.ready}`);
     }
 
     broadcastTradeUpdate(data.trade_id, io);
 
-    if (trade.initiator_confirmed && trade.receiver_confirmed) {
+    if (trade.initiator_ready && trade.receiver_ready) {
       console.log(`🎉 Executing trade ${data.trade_id}...`);
       
       trade.status = "executing";
