@@ -79,6 +79,9 @@ function safePlayerView(p) {
     move_speed: 120,
     is_trading: !!p.activeTradeId,
     is_invisible: !!p.is_invisible,
+    active_transformation_image_url: p.active_transformation_image_url,
+    active_transformation_settings: p.active_transformation_settings,
+    visual_override_data: p.visual_override_data,
   };
 }
 
@@ -492,6 +495,50 @@ app.post("/broadcast-config", (req, res) => {
   io.emit("config_refresh_required", { type });
   
   res.json({ ok: true, broadcasted: true });
+});
+
+// ---------- System Update Player Endpoint ----------
+app.post("/system/update_player", (req, res) => {
+  const authHeader = req.headers["authorization"];
+  const key = authHeader && authHeader.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
+  
+  if (key !== BASE44_SERVICE_KEY) {
+      console.error("❌ /system/update_player Unauthorized access attempt");
+      return res.status(403).json({ ok: false, error: "Unauthorized" });
+  }
+
+  const { playerId, data } = req.body;
+  if (!playerId || !data) {
+      return res.status(400).json({ ok: false, error: "Missing playerId or data" });
+  }
+
+  const socketId = getSocketIdByPlayerId(playerId);
+  if (!socketId) {
+      // Player not connected - that's okay, just ignore
+      return res.json({ ok: false, error: "Player not connected" });
+  }
+
+  const player = players.get(socketId);
+  if (!player) {
+      return res.json({ ok: false, error: "Player not found" });
+  }
+
+  // Update in-memory player state
+  Object.assign(player, data);
+  
+  console.log(`🧪 Potion/System Effect on ${player.username}:`, Object.keys(data));
+
+  // Broadcast specific update to the area
+  const updatePayload = {
+      id: player.playerId,
+      playerId: player.playerId,
+      socketId: player.socketId,
+      ...data
+  };
+
+  io.to(player.current_area).emit("player_update", updatePayload);
+
+  res.json({ ok: true });
 });
 
 // ---------- Socket.IO ----------
