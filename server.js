@@ -81,7 +81,9 @@ function safePlayerView(p) {
     is_invisible: !!p.is_invisible,
     active_transformation_image_url: p.active_transformation_image_url,
     active_transformation_settings: p.active_transformation_settings,
+    active_transformation_expires_at: p.active_transformation_expires_at,
     visual_override_data: p.visual_override_data,
+    visual_override_expires_at: p.visual_override_expires_at,
   };
 }
 
@@ -1144,7 +1146,12 @@ setInterval(() => {
         player.destination_x = undefined;
         player.destination_y = undefined;
       } else {
-        const moveSpeed = 10;
+        let moveSpeed = 10;
+        // Apply speed potion multiplier if active
+        if (player.active_transformation_settings?.speed) {
+            moveSpeed *= Number(player.active_transformation_settings.speed) || 1;
+        }
+        
         player.position_x += (dx / distance) * moveSpeed;
         player.position_y += (dy / distance) * moveSpeed;
       }
