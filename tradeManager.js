@@ -554,16 +554,39 @@ module.exports = {
     // ========== TRADE CHAT ==========
     socket.on("trade_chat", (data = {}) => {
       const p = players.get(socket.id);
-      if (!p) return;
+      if (!p) {
+          console.log("❌ Trade Chat Error: Player not found for socket", socket.id);
+          return;
+      }
 
-      const trade = activeTrades.get(data.trade_id);
-      if (!trade) return;
+      // Find trade by player's active trade
+      let trade = activeTrades.get(data.trade_id);
+      
+      // Fallback: find trade where player is participant
+      if (!trade) {
+          for (const [tradeId, t] of activeTrades.entries()) {
+              if (t.initiatorId === p.playerId || t.receiverId === p.playerId) {
+                  trade = t;
+                  break;
+              }
+          }
+      }
+      
+      if (!trade) {
+          console.log("❌ Trade Chat Error: Trade not found for player", p.username);
+          return;
+      }
 
       // Validate participant
-      if (trade.initiatorId !== p.playerId && trade.receiverId !== p.playerId) return;
+      if (trade.initiatorId !== p.playerId && trade.receiverId !== p.playerId) {
+          console.log("❌ Trade Chat Error: Player not participant", p.username, trade.id);
+          return;
+      }
 
       const message = (data.message || "").toString().trim().slice(0, 100);
       if (!message) return;
+
+      console.log(`💬 Trade Chat (${trade.id}): ${p.username} says "${message}"`);
 
       const chatPayload = {
         trade_id: trade.id,
@@ -576,8 +599,23 @@ module.exports = {
       const initSid = getSocketIdByPlayerId(trade.initiatorId);
       const recvSid = getSocketIdByPlayerId(trade.receiverId);
 
-      if (initSid) io.to(initSid).emit("trade_chat_message", chatPayload);
-      if (recvSid) io.to(recvSid).emit("trade_chat_message", chatPayload);
+      console.log(`📤 Sending trade chat - Initiator socket: ${initSid}, Receiver socket: ${recvSid}`);
+
+      // Send to initiator
+      if (initSid) {
+          io.to(initSid).emit("trade_chat_message", chatPayload);
+          console.log(`✅ Sent to initiator ${trade.initiatorId}`);
+      } else {
+          console.log("⚠️ Trade Chat: Initiator socket not found", trade.initiatorId);
+      }
+
+      // Send to receiver
+      if (recvSid) {
+          io.to(recvSid).emit("trade_chat_message", chatPayload);
+          console.log(`✅ Sent to receiver ${trade.receiverId}`);
+      } else {
+          console.log("⚠️ Trade Chat: Receiver socket not found", trade.receiverId);
+      }
     });
   }
 };
