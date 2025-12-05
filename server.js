@@ -84,9 +84,6 @@ function safePlayerView(p) {
     active_transformation_image_url: p.active_transformation_image_url,
     active_transformation_settings: p.active_transformation_settings,
     active_transformation_expires_at: p.active_transformation_expires_at,
-    active_subscription_tier: p.active_subscription_tier,
-    subscription_expires_at: p.subscription_expires_at,
-    level: p.level,
   };
 }
 
@@ -132,8 +129,6 @@ function normalizePlayerShape(playerData) {
     xp: playerData?.xp || 0,
     coins: playerData?.coins || 500,
     gems: playerData?.gems || 10,
-    active_subscription_tier: playerData?.active_subscription_tier,
-    subscription_expires_at: playerData?.subscription_expires_at,
   };
 }
 
@@ -571,10 +566,6 @@ io.on("connection", async (socket) => {
     active_transformation_image_url: null,
     active_transformation_settings: null,
     active_transformation_expires_at: null,
-    // Subscription info
-    active_subscription_tier: playerData.active_subscription_tier,
-    subscription_expires_at: playerData.subscription_expires_at,
-    level: playerData.level || 1,
   };
 
   players.set(socket.id, player);
