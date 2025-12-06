@@ -1,5 +1,5 @@
 // ============================================================================
-// Touch World - Socket Server v11.3.0 - FULL VERSION
+// Touch World - Socket Server v11.3.0 - PLAYER-ONLY SYSTEM + DONUT SYNC FIXED
 // ============================================================================
 
 const { createServer } = require("http");
@@ -8,11 +8,9 @@ const cors = require("cors");
 const helmet = require("helmet");
 const { Server } = require("socket.io");
 const fetch = require("node-fetch");
-
-// ========== טעינת כל המודולים ==========
 const donutManager = require("./donutManager");
 const tradeManager = require("./tradeManager");
-const potionManager = require("./potionManager");
+const tradeManager = require("./tradeManager");
 require("dotenv").config();
 
 const app = express();
@@ -41,11 +39,11 @@ const PORT = process.env.PORT || 10000;
 const JWT_SECRET = process.env.JWT_SECRET;
 const VERIFY_TOKEN_URL =
   process.env.VERIFY_TOKEN_URL ||
-  "https://base44.app/api/apps/691308e1166733e71fb53d35/functions/verifyWebSocketToken";
+  "https://base44.app/api/apps/68e269394d8f2fa24e82cd71/functions/verifyWebSocketToken";
 const BASE44_SERVICE_KEY = process.env.BASE44_SERVICE_KEY;
 const BASE44_API_URL =
   process.env.BASE44_API_URL ||
-  "https://base44.app/api/apps/691308e1166733e71fb53d35";
+  "https://base44.app/api/apps/68e269394d8f2fa24e82cd71";
 const HEALTH_KEY = process.env.HEALTH_KEY || "secret-health";
 
 if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
@@ -53,7 +51,7 @@ if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   process.exit(1);
 }
 
-const VERSION = "11.7.0";
+const VERSION = "11.7.0"; // Slow Donut Spawning Cycle
 
 // ---------- State ----------
 const players = new Map();
@@ -157,6 +155,7 @@ async function verifyTokenWithBase44(token) {
       throw new Error("normalized playerId missing");
     }
 
+    // 🔒 אימות session_id מול הטוקן
     if (result.sessionId && result.player.session_id) {
       if (result.sessionId !== result.player.session_id) {
         throw new Error("Session mismatch - possible token hijacking");
@@ -280,6 +279,50 @@ app.post("/broadcast-config", (req, res) => {
   res.json({ ok: true, broadcasted: true });
 });
 
+// ---------- System Update Player Endpoint ----------
+app.post("/system/update_player", (req, res) => {
+  const authHeader = req.headers["authorization"];
+  const key = authHeader && authHeader.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
+  
+  if (key !== BASE44_SERVICE_KEY) {
+      console.error("❌ /system/update_player Unauthorized access attempt");
+      return res.status(403).json({ ok: false, error: "Unauthorized" });
+  }
+
+  const { playerId, data } = req.body;
+  if (!playerId || !data) {
+      return res.status(400).json({ ok: false, error: "Missing playerId or data" });
+  }
+
+  const socketId = getSocketIdByPlayerId(playerId);
+  if (!socketId) {
+      // Player not connected - that's okay, just ignore
+      return res.json({ ok: false, error: "Player not connected" });
+  }
+
+  const player = players.get(socketId);
+  if (!player) {
+      return res.json({ ok: false, error: "Player not found" });
+  }
+
+  // Update in-memory player state
+  Object.assign(player, data);
+  
+  console.log(`🧪 Potion/System Effect on ${player.username}:`, Object.keys(data));
+
+  // Broadcast specific update to the area
+  const updatePayload = {
+      id: player.playerId,
+      playerId: player.playerId,
+      socketId: player.socketId,
+      ...data
+  };
+
+  io.to(player.current_area).emit("player_update", updatePayload);
+
+  res.json({ ok: true });
+});
+
 // ---------- Socket.IO ----------
 const io = new Server(httpServer, {
   cors: {
@@ -290,12 +333,6 @@ const io = new Server(httpServer, {
   pingTimeout: 60000,
   pingInterval: 25000,
 });
-
-// ========== טעינת מודול השיקויים ==========
-if (potionManager && typeof potionManager.setupRoutes === 'function') {
-    potionManager.setupRoutes(app, io, players, BASE44_SERVICE_KEY, getSocketIdByPlayerId);
-    console.log('✅ Potion Manager Routes loaded!');
-}
 
 // ---------- Connection ----------
 io.on("connection", async (socket) => {
@@ -313,6 +350,7 @@ io.on("connection", async (socket) => {
     return;
   }
 
+  // Kick duplicate
   for (const [sid, p] of players.entries()) {
     if (p.playerId === playerData.playerId && sid !== socket.id) {
       console.log(`⚠️ Kicking duplicate session for ${p.username}`);
@@ -322,6 +360,7 @@ io.on("connection", async (socket) => {
     }
   }
 
+  // Register player
   const player = {
     socketId: socket.id,
     playerId: playerData.playerId,
@@ -339,11 +378,6 @@ io.on("connection", async (socket) => {
     destination_y: undefined,
     is_invisible: playerData.is_invisible ?? false,
     keep_away_mode: playerData.keep_away_mode ?? false,
-    active_transformation_image_url: playerData.active_transformation_image_url,
-    active_transformation_settings: playerData.active_transformation_settings,
-    active_transformation_expires_at: playerData.active_transformation_expires_at,
-    visual_override_data: playerData.visual_override_data,
-    visual_override_expires_at: playerData.visual_override_expires_at,
     _lastMoveLogAt: 0,
   };
 
@@ -357,6 +391,7 @@ io.on("connection", async (socket) => {
   socket.emit("identify_ok", safePlayerView(player));
   socket.emit("current_players", areaPeers);
   
+  // SYNC DONUTS (In-Memory)
   const currentDonuts = donutManager.getDonutsForArea(player.current_area);
   socket.emit("donuts_sync", currentDonuts);
 
@@ -374,11 +409,7 @@ io.on("connection", async (socket) => {
       tradeManager.setupSocketHandlers(socket);
   }
 
-  // ========== POTION SYSTEM ==========
-  if (potionManager && typeof potionManager.setupSocketHandlers === 'function') {
-      potionManager.setupSocketHandlers(socket, players, io);
-  }
-
+  // ========== MOVE_TO ==========
   socket.on("move_to", (data = {}) => {
     const p = players.get(socket.id);
     if (!p) return;
@@ -419,10 +450,12 @@ io.on("connection", async (socket) => {
     }
   });
 
+  // ========== PLAYER_UPDATE ==========
   socket.on("player_update", (data = {}) => {
     const p = players.get(socket.id);
     if (!p) return;
 
+    // 🔒 אימות: מונע שינוי מידע של שחקנים אחרים
     if (data.playerId && data.playerId !== p.playerId) {
       console.error(`⚠️ SECURITY: ${p.username} tried to update another player!`);
       return;
@@ -435,12 +468,14 @@ io.on("connection", async (socket) => {
     if (typeof data.animation_frame === "string") p.animation_frame = data.animation_frame;
     if (data.equipment && typeof data.equipment === "object") p.equipment = data.equipment;
     
+    // 🔒 רק אדמינים יכולים לשנות invisibility
     if (typeof data.is_invisible === "boolean") {
       if (p.admin_level === 'admin') {
         p.is_invisible = data.is_invisible;
       }
     }
 
+    // 🔒 רק אדמינים יכולים להפעיל keep_away_mode
     if (typeof data.keep_away_mode === "boolean") {
       if (p.admin_level === 'admin') {
         p.keep_away_mode = data.keep_away_mode;
@@ -460,6 +495,7 @@ io.on("connection", async (socket) => {
     });
   });
 
+  // ========== ADMIN_KICK_PLAYER ==========
   socket.on("admin_kick_player", (data = {}) => {
     const admin = players.get(socket.id);
     if (!admin || admin.admin_level !== 'admin') return;
@@ -482,6 +518,7 @@ io.on("connection", async (socket) => {
     }, 1000);
   });
 
+  // ========== CHAT_MESSAGE ==========
   socket.on("chat_message", (data = {}) => {
     const p = players.get(socket.id);
     if (!p) return;
@@ -509,6 +546,7 @@ io.on("connection", async (socket) => {
     io.to(p.current_area).emit("chat_message", payload);
   });
 
+  // ========== ADMIN_CONFIG_UPDATED ==========
   socket.on("admin_config_updated", (data = {}) => {
     const adminPlayer = players.get(socket.id);
     if (!adminPlayer) return;
@@ -519,6 +557,7 @@ io.on("connection", async (socket) => {
     io.emit("config_refresh_required", { type: data.type });
   });
 
+  // ========== ADMIN_SYSTEM_MESSAGE ==========
   socket.on("admin_system_message", (messageData = {}) => {
     const adminPlayer = players.get(socket.id);
     if (!adminPlayer) return;
@@ -540,6 +579,7 @@ io.on("connection", async (socket) => {
     }
   });
 
+  // ========== CHANGE_AREA ==========
   socket.on("change_area", (data = {}) => {
     const p = players.get(socket.id);
     if (!p) return;
@@ -561,10 +601,12 @@ io.on("connection", async (socket) => {
     socket.emit("current_players", peers);
     socket.to(newArea).emit("player_joined", safePlayerView(p));
 
+    // SYNC DONUTS (In-Memory)
     const currentDonuts = donutManager.getDonutsForArea(newArea);
     socket.emit("donuts_sync", currentDonuts);
   });
 
+  // ========== DISCONNECT ==========
   socket.on("disconnect", (reason) => {
     const p = players.get(socket.id);
     if (!p) return;
@@ -573,6 +615,7 @@ io.on("connection", async (socket) => {
     
     socket.to(p.current_area).emit("player_disconnected", p.playerId);
 
+    // Handle Trade Disconnect
     if (tradeManager && typeof tradeManager.handleDisconnect === 'function') {
         tradeManager.handleDisconnect(socket.id);
     }
@@ -599,6 +642,7 @@ setInterval(() => {
         player.destination_y = undefined;
       } else {
         let moveSpeed = 10;
+        // Apply speed potion multiplier if active
         if (player.active_transformation_settings?.speed) {
             moveSpeed *= Number(player.active_transformation_settings.speed) || 1;
         }
@@ -670,29 +714,25 @@ httpServer.listen(PORT, () => {
   console.log(`🚀 Touch World Server v${VERSION} - Port ${PORT}`);
   console.log(`✅ PLAYER-ONLY SYSTEM - NO BASE44 USERS!`);
   console.log(`✅ CUSTOM JWT AUTHENTICATION!`);
+  console.log(`✅ TRADE SYSTEM with EQUIPMENT REMOVAL + DB UPDATE!`);
+  console.log(`✅ ADMIN MODERATION enabled!`);
+  console.log(`👻 STEALTH MODE enabled!`);
+  console.log(`🚫 KEEP-AWAY MODE: ${KEEP_AWAY_RADIUS}px!`);
+  console.log(`💬 CHAT BUBBLE SYNC enabled!`);
+  console.log(`🍩 Donut System Integration!`);
   console.log(`${"★".repeat(60)}\n`);
   
   // ========== DONUT SYSTEM INIT ==========
   if (donutManager && typeof donutManager.initialize === 'function') {
       donutManager.initialize(io, BASE44_SERVICE_KEY, BASE44_API_URL);
-      console.log('✅ Donut Manager initialized!');
   } else {
-      console.error('❌ Donut Manager NOT FOUND!');
+      console.error('❌ Donut Manager Initialize function NOT FOUND!');
   }
 
   // ========== TRADE SYSTEM INIT ==========
   if (tradeManager && typeof tradeManager.initialize === 'function') {
       tradeManager.initialize(io, BASE44_API_URL, BASE44_SERVICE_KEY, players, getSocketIdByPlayerId);
-      console.log('✅ Trade Manager initialized!');
   } else {
-      console.error('❌ Trade Manager NOT FOUND!');
-  }
-
-  // ========== POTION SYSTEM INIT ==========
-  if (potionManager && typeof potionManager.initialize === 'function') {
-      potionManager.initialize(io, BASE44_API_URL, BASE44_SERVICE_KEY, players, getSocketIdByPlayerId);
-      console.log('✅ Potion Manager initialized!');
-  } else {
-      console.error('❌ Potion Manager NOT FOUND!');
+      console.error('❌ Trade Manager Initialize function NOT FOUND!');
   }
 });
