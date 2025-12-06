@@ -1,5 +1,5 @@
 // ============================================================================
-// Touch World - Socket Server v11.8.0 - CLEAN ARCHITECTURE
+// Touch World - Socket Server v11.3.0 - PLAYER-ONLY SYSTEM + DONUT SYNC FIXED
 // ============================================================================
 
 const { createServer } = require("http");
@@ -50,7 +50,7 @@ if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   process.exit(1);
 }
 
-const VERSION = "11.8.0";
+const VERSION = "11.7.0"; // Slow Donut Spawning Cycle
 
 // ---------- State ----------
 const players = new Map();
@@ -83,6 +83,8 @@ function safePlayerView(p) {
     active_transformation_expires_at: p.active_transformation_expires_at,
     visual_override_data: p.visual_override_data,
     visual_override_expires_at: p.visual_override_expires_at,
+    active_subscription_tier: p.active_subscription_tier || 'none',
+    subscription_expires_at: p.subscription_expires_at,
   };
 }
 
@@ -125,6 +127,8 @@ function normalizePlayerShape(playerData) {
     xp: playerData?.xp || 0,
     coins: playerData?.coins || 500,
     gems: playerData?.gems || 10,
+    active_subscription_tier: playerData?.active_subscription_tier || 'none',
+    subscription_expires_at: playerData?.subscription_expires_at,
   };
 }
 
@@ -374,6 +378,8 @@ io.on("connection", async (socket) => {
     destination_y: undefined,
     is_invisible: playerData.is_invisible ?? false,
     keep_away_mode: playerData.keep_away_mode ?? false,
+    active_subscription_tier: playerData.active_subscription_tier || 'none',
+    subscription_expires_at: playerData.subscription_expires_at,
     _lastMoveLogAt: 0,
   };
 
@@ -394,17 +400,14 @@ io.on("connection", async (socket) => {
 
   console.log(`🟢 Connected: ${player.username} (${player.current_area})`);
 
-  // ========== DONUT SYSTEM ==========
   if (donutManager && typeof donutManager.setupSocketHandlers === 'function') {
       donutManager.setupSocketHandlers(socket, players);
   }
 
-  // ========== TRADE SYSTEM ==========
   if (tradeManager && typeof tradeManager.setupSocketHandlers === 'function') {
       tradeManager.setupSocketHandlers(socket);
   }
 
-  // ========== MOVE_TO ==========
   socket.on("move_to", (data = {}) => {
     const p = players.get(socket.id);
     if (!p) return;
@@ -445,7 +448,6 @@ io.on("connection", async (socket) => {
     }
   });
 
-  // ========== PLAYER_UPDATE ==========
   socket.on("player_update", (data = {}) => {
     const p = players.get(socket.id);
     if (!p) return;
@@ -487,7 +489,6 @@ io.on("connection", async (socket) => {
     });
   });
 
-  // ========== ADMIN_KICK_PLAYER ==========
   socket.on("admin_kick_player", (data = {}) => {
     const admin = players.get(socket.id);
     if (!admin || admin.admin_level !== 'admin') return;
@@ -510,7 +511,6 @@ io.on("connection", async (socket) => {
     }, 1000);
   });
 
-  // ========== CHAT_MESSAGE ==========
   socket.on("chat_message", (data = {}) => {
     const p = players.get(socket.id);
     if (!p) return;
@@ -538,7 +538,6 @@ io.on("connection", async (socket) => {
     io.to(p.current_area).emit("chat_message", payload);
   });
 
-  // ========== ADMIN_CONFIG_UPDATED ==========
   socket.on("admin_config_updated", (data = {}) => {
     const adminPlayer = players.get(socket.id);
     if (!adminPlayer) return;
@@ -549,7 +548,6 @@ io.on("connection", async (socket) => {
     io.emit("config_refresh_required", { type: data.type });
   });
 
-  // ========== ADMIN_SYSTEM_MESSAGE ==========
   socket.on("admin_system_message", (messageData = {}) => {
     const adminPlayer = players.get(socket.id);
     if (!adminPlayer) return;
@@ -571,7 +569,6 @@ io.on("connection", async (socket) => {
     }
   });
 
-  // ========== CHANGE_AREA ==========
   socket.on("change_area", (data = {}) => {
     const p = players.get(socket.id);
     if (!p) return;
@@ -597,7 +594,6 @@ io.on("connection", async (socket) => {
     socket.emit("donuts_sync", currentDonuts);
   });
 
-  // ========== DISCONNECT ==========
   socket.on("disconnect", (reason) => {
     const p = players.get(socket.id);
     if (!p) return;
@@ -701,20 +697,25 @@ setInterval(() => {
 httpServer.listen(PORT, () => {
   console.log(`\n${"★".repeat(60)}`);
   console.log(`🚀 Touch World Server v${VERSION} - Port ${PORT}`);
-  console.log(`✅ PLAYER-ONLY SYSTEM`);
-  console.log(`✅ CUSTOM JWT AUTHENTICATION`);
-  console.log(`✅ ADMIN MODERATION enabled`);
-  console.log(`👻 STEALTH MODE enabled`);
-  console.log(`🚫 KEEP-AWAY MODE: ${KEEP_AWAY_RADIUS}px`);
-  console.log(`🍩 Donut System Integration`);
-  console.log(`🔄 Trade System (Modular)`);
+  console.log(`✅ PLAYER-ONLY SYSTEM - NO BASE44 USERS!`);
+  console.log(`✅ CUSTOM JWT AUTHENTICATION!`);
+  console.log(`✅ TRADE SYSTEM with EQUIPMENT REMOVAL + DB UPDATE!`);
+  console.log(`✅ ADMIN MODERATION enabled!`);
+  console.log(`👻 STEALTH MODE enabled!`);
+  console.log(`🚫 KEEP-AWAY MODE: ${KEEP_AWAY_RADIUS}px!`);
+  console.log(`💬 CHAT BUBBLE SYNC enabled!`);
+  console.log(`🍩 Donut System Integration!`);
   console.log(`${"★".repeat(60)}\n`);
   
   if (donutManager && typeof donutManager.initialize === 'function') {
       donutManager.initialize(io, BASE44_SERVICE_KEY, BASE44_API_URL);
+  } else {
+      console.error('❌ Donut Manager Initialize function NOT FOUND!');
   }
 
   if (tradeManager && typeof tradeManager.initialize === 'function') {
       tradeManager.initialize(io, BASE44_API_URL, BASE44_SERVICE_KEY, players, getSocketIdByPlayerId);
+  } else {
+      console.error('❌ Trade Manager Initialize function NOT FOUND!');
   }
 });
