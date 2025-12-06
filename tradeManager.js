@@ -1,18 +1,45 @@
 // 🔄 Trade Manager - מערכת החלפות מושלמת
-export default class TradeManager {
+const fetch = require("node-fetch");
+
+class TradeManager {
     constructor() {
         this.trades = new Map();
         this.playerTrades = new Map();
         this.io = null;
-        this.playerSocketMap = null;
-        this.base44 = null;
+        this.players = null;
+        this.getSocketIdByPlayerId = null;
+        this.BASE44_API_URL = null;
+        this.BASE44_SERVICE_KEY = null;
     }
 
-    initialize(io, playerSocketMap, base44) {
+    initialize(io, apiUrl, serviceKey, players, getSocketIdByPlayerId) {
         this.io = io;
-        this.playerSocketMap = playerSocketMap;
-        this.base44 = base44;
+        this.BASE44_API_URL = apiUrl;
+        this.BASE44_SERVICE_KEY = serviceKey;
+        this.players = players;
+        this.getSocketIdByPlayerId = getSocketIdByPlayerId;
         console.log('✅ TradeManager initialized');
+    }
+
+    getActiveTradesCount() {
+        return this.trades.size;
+    }
+
+    setupSocketHandlers(socket) {
+        socket.on('trade_request', (data) => this.handleTradeRequest(socket, data));
+        socket.on('trade_accept', (data) => this.handleTradeAccept(socket, data));
+        socket.on('trade_offer_update', (data) => this.handleOfferUpdate(socket, data));
+        socket.on('trade_lock_update', (data) => this.handleLockUpdate(socket, data));
+        socket.on('trade_ready_update', (data) => this.handleReadyUpdate(socket, data));
+        socket.on('trade_cancel', (data) => this.handleTradeCancel(socket, data));
+        socket.on('trade_chat', (data) => this.handleTradeChat(socket, data));
+    }
+
+    handleDisconnect(socketId) {
+        const player = this.players.get(socketId);
+        if (player) {
+            this.handlePlayerDisconnect(player.playerId);
+        }
     }
 
     handleTradeRequest(socket, data) {
@@ -26,11 +53,19 @@ export default class TradeManager {
             return;
         }
 
-        const targetSocket = this.playerSocketMap.get(target_player_id);
+        const targetSocketId = this.getSocketIdByPlayerId(target_player_id);
+        if (!targetSocketId) {
+            socket.emit('trade_error', { error: 'השחקן לא מחובר' });
+            return;
+        }
+        
+        const targetSocket = this.io.sockets.sockets.get(targetSocketId);
         if (!targetSocket) {
             socket.emit('trade_error', { error: 'השחקן לא מחובר' });
             return;
         }
+        
+        const targetPlayerData = this.players.get(targetSocketId);
 
         if (this.playerTrades.has(target_player_id)) {
             socket.emit('trade_error', { error: 'השחקן כבר בהחלפה' });
@@ -62,18 +97,18 @@ export default class TradeManager {
             },
             receiver: {
                 id: target_player_id,
-                username: targetSocket.playerData.username,
+                username: targetPlayerData.username,
                 equipment: {
-                    skin_code: targetSocket.playerData.skin_code,
-                    equipped_hair: targetSocket.playerData.equipped_hair,
-                    equipped_top: targetSocket.playerData.equipped_top,
-                    equipped_pants: targetSocket.playerData.equipped_pants,
-                    equipped_hat: targetSocket.playerData.equipped_hat,
-                    equipped_necklace: targetSocket.playerData.equipped_necklace,
-                    equipped_halo: targetSocket.playerData.equipped_halo,
-                    equipped_shoes: targetSocket.playerData.equipped_shoes,
-                    equipped_gloves: targetSocket.playerData.equipped_gloves,
-                    equipped_accessory: targetSocket.playerData.equipped_accessory
+                    skin_code: targetPlayerData.skin_code,
+                    equipped_hair: targetPlayerData.equipped_hair,
+                    equipped_top: targetPlayerData.equipped_top,
+                    equipped_pants: targetPlayerData.equipped_pants,
+                    equipped_hat: targetPlayerData.equipped_hat,
+                    equipped_necklace: targetPlayerData.equipped_necklace,
+                    equipped_halo: targetPlayerData.equipped_halo,
+                    equipped_shoes: targetPlayerData.equipped_shoes,
+                    equipped_gloves: targetPlayerData.equipped_gloves,
+                    equipped_accessory: targetPlayerData.equipped_accessory
                 },
                 locked: false,
                 ready: false
@@ -111,8 +146,11 @@ export default class TradeManager {
 
         trade.status = 'active';
 
-        const initiatorSocket = this.playerSocketMap.get(trade.initiator.id);
-        const receiverSocket = this.playerSocketMap.get(trade.receiver.id);
+        const initiatorSocketId = this.getSocketIdByPlayerId(trade.initiator.id);
+        const receiverSocketId = this.getSocketIdByPlayerId(trade.receiver.id);
+        
+        const initiatorSocket = initiatorSocketId ? this.io.sockets.sockets.get(initiatorSocketId) : null;
+        const receiverSocket = receiverSocketId ? this.io.sockets.sockets.get(receiverSocketId) : null;
 
         if (initiatorSocket) initiatorSocket.emit('trade_accepted', { trade });
         if (receiverSocket) receiverSocket.emit('trade_accepted', { trade });
@@ -187,8 +225,11 @@ export default class TradeManager {
 
         if (!trade) return;
 
-        const initiatorSocket = this.playerSocketMap.get(trade.initiator.id);
-        const receiverSocket = this.playerSocketMap.get(trade.receiver.id);
+        const initiatorSocketId = this.getSocketIdByPlayerId(trade.initiator.id);
+        const receiverSocketId = this.getSocketIdByPlayerId(trade.receiver.id);
+        
+        const initiatorSocket = initiatorSocketId ? this.io.sockets.sockets.get(initiatorSocketId) : null;
+        const receiverSocket = receiverSocketId ? this.io.sockets.sockets.get(receiverSocketId) : null;
 
         if (initiatorSocket) initiatorSocket.emit('trade_cancelled', { reason: 'השותף ביטל' });
         if (receiverSocket) receiverSocket.emit('trade_cancelled', { reason: 'השותף ביטל' });
@@ -214,8 +255,11 @@ export default class TradeManager {
 
         console.log(`💬 Trade chat [${trade_id}]: ${chatMessage.sender_name}: ${chatMessage.message}`);
 
-        const initiatorSocket = this.playerSocketMap.get(trade.initiator.id);
-        const receiverSocket = this.playerSocketMap.get(trade.receiver.id);
+        const initiatorSocketId = this.getSocketIdByPlayerId(trade.initiator.id);
+        const receiverSocketId = this.getSocketIdByPlayerId(trade.receiver.id);
+        
+        const initiatorSocket = initiatorSocketId ? this.io.sockets.sockets.get(initiatorSocketId) : null;
+        const receiverSocket = receiverSocketId ? this.io.sockets.sockets.get(receiverSocketId) : null;
 
         if (initiatorSocket) {
             initiatorSocket.emit('trade_chat_message', chatMessage);
@@ -233,7 +277,8 @@ export default class TradeManager {
         if (!trade) return;
 
         const otherPlayerId = trade.initiator.id === playerId ? trade.receiver.id : trade.initiator.id;
-        const otherSocket = this.playerSocketMap.get(otherPlayerId);
+        const otherSocketId = this.getSocketIdByPlayerId(otherPlayerId);
+        const otherSocket = otherSocketId ? this.io.sockets.sockets.get(otherSocketId) : null;
 
         if (otherSocket) {
             otherSocket.emit('trade_cancelled', { reason: 'השותף התנתק' });
@@ -247,17 +292,29 @@ export default class TradeManager {
         console.log(`⚙️ Executing trade: ${trade.id}`);
 
         try {
-            const result = await this.base44.functions.invoke('executeTrade', {
-                trade_id: trade.id,
-                initiator_id: trade.initiator.id,
-                receiver_id: trade.receiver.id,
-                initiator_offer: trade.initiator_offer,
-                receiver_offer: trade.receiver_offer
+            const response = await fetch(`${this.BASE44_API_URL}/functions/executeTrade`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${this.BASE44_SERVICE_KEY}`
+                },
+                body: JSON.stringify({
+                    trade_id: trade.id,
+                    initiator_id: trade.initiator.id,
+                    receiver_id: trade.receiver.id,
+                    initiator_offer: trade.initiator_offer,
+                    receiver_offer: trade.receiver_offer
+                })
             });
+            
+            const result = await response.json();
 
-            if (result.data?.success) {
-                const initiatorSocket = this.playerSocketMap.get(trade.initiator.id);
-                const receiverSocket = this.playerSocketMap.get(trade.receiver.id);
+            if (result?.success || result?.data?.success) {
+                const initiatorSocketId = this.getSocketIdByPlayerId(trade.initiator.id);
+                const receiverSocketId = this.getSocketIdByPlayerId(trade.receiver.id);
+                
+                const initiatorSocket = initiatorSocketId ? this.io.sockets.sockets.get(initiatorSocketId) : null;
+                const receiverSocket = receiverSocketId ? this.io.sockets.sockets.get(receiverSocketId) : null;
 
                 if (initiatorSocket) initiatorSocket.emit('trade_completed_successfully', { trade });
                 if (receiverSocket) receiverSocket.emit('trade_completed_successfully', { trade });
@@ -269,8 +326,11 @@ export default class TradeManager {
         } catch (error) {
             console.error(`❌ Trade execution failed:`, error);
             
-            const initiatorSocket = this.playerSocketMap.get(trade.initiator.id);
-            const receiverSocket = this.playerSocketMap.get(trade.receiver.id);
+            const initiatorSocketId = this.getSocketIdByPlayerId(trade.initiator.id);
+            const receiverSocketId = this.getSocketIdByPlayerId(trade.receiver.id);
+            
+            const initiatorSocket = initiatorSocketId ? this.io.sockets.sockets.get(initiatorSocketId) : null;
+            const receiverSocket = receiverSocketId ? this.io.sockets.sockets.get(receiverSocketId) : null;
 
             if (initiatorSocket) initiatorSocket.emit('trade_error', { error: 'שגיאה בביצוע החלפה' });
             if (receiverSocket) receiverSocket.emit('trade_error', { error: 'שגיאה בביצוע החלפה' });
@@ -280,8 +340,11 @@ export default class TradeManager {
     }
 
     _broadcastTradeUpdate(trade) {
-        const initiatorSocket = this.playerSocketMap.get(trade.initiator.id);
-        const receiverSocket = this.playerSocketMap.get(trade.receiver.id);
+        const initiatorSocketId = this.getSocketIdByPlayerId(trade.initiator.id);
+        const receiverSocketId = this.getSocketIdByPlayerId(trade.receiver.id);
+        
+        const initiatorSocket = initiatorSocketId ? this.io.sockets.sockets.get(initiatorSocketId) : null;
+        const receiverSocket = receiverSocketId ? this.io.sockets.sockets.get(receiverSocketId) : null;
 
         if (initiatorSocket) initiatorSocket.emit('trade_status_updated', trade);
         if (receiverSocket) receiverSocket.emit('trade_status_updated', trade);
@@ -298,3 +361,5 @@ export default class TradeManager {
         console.log(`🧹 Trade cleaned up: ${tradeId}`);
     }
 }
+
+module.exports = new TradeManager();
