@@ -1,365 +1,634 @@
-// 🔄 Trade Manager - מערכת החלפות מושלמת
 const fetch = require("node-fetch");
 
-class TradeManager {
-    constructor() {
-        this.trades = new Map();
-        this.playerTrades = new Map();
-        this.io = null;
-        this.players = null;
-        this.getSocketIdByPlayerId = null;
-        this.BASE44_API_URL = null;
-        this.BASE44_SERVICE_KEY = null;
-    }
+let activeTrades = new Map();
+let BASE44_API_URL;
+let BASE44_SERVICE_KEY;
+let io;
+let players;
+let getSocketIdByPlayerId;
 
-    initialize(io, apiUrl, serviceKey, players, getSocketIdByPlayerId) {
-        this.io = io;
-        this.BASE44_API_URL = apiUrl;
-        this.BASE44_SERVICE_KEY = serviceKey;
-        this.players = players;
-        this.getSocketIdByPlayerId = getSocketIdByPlayerId;
-        console.log('✅ TradeManager initialized');
-    }
+async function getEquippedItemsFromOffer(playerId, offerItems) {
+  if (!offerItems || offerItems.length === 0) return [];
 
-    getActiveTradesCount() {
-        return this.trades.size;
-    }
+  try {
+    const itemsResponse = await fetch(`${BASE44_API_URL}/entities/Item`, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${BASE44_SERVICE_KEY}`,
+      },
+    });
 
-    setupSocketHandlers(socket) {
-        socket.on('trade_request', (data) => this.handleTradeRequest(socket, data));
-        socket.on('trade_accept', (data) => this.handleTradeAccept(socket, data));
-        socket.on('trade_offer_update', (data) => this.handleOfferUpdate(socket, data));
-        socket.on('trade_lock_update', (data) => this.handleLockUpdate(socket, data));
-        socket.on('trade_ready_update', (data) => this.handleReadyUpdate(socket, data));
-        socket.on('trade_cancel', (data) => this.handleTradeCancel(socket, data));
-        socket.on('trade_chat', (data) => this.handleTradeChat(socket, data));
-    }
+    if (!itemsResponse.ok) return [];
+    
+    const allItems = await itemsResponse.json();
+    const itemsMap = new Map(allItems.map(item => [item.id, item]));
 
-    handleDisconnect(socketId) {
-        const player = this.players.get(socketId);
-        if (player) {
-            this.handlePlayerDisconnect(player.playerId);
-        }
-    }
+    const socketId = getSocketIdByPlayerId(playerId);
+    if (!socketId) return [];
+    
+    const player = players.get(socketId);
+    if (!player) return [];
 
-    handleTradeRequest(socket, data) {
-        const { target_player_id } = data;
-        const initiatorPlayerId = socket.playerId;
+    const equippedItems = [];
 
-        console.log(`📤 Trade request: ${initiatorPlayerId} -> ${target_player_id}`);
+    for (const inventoryItemId of offerItems) {
+      const invResponse = await fetch(`${BASE44_API_URL}/entities/PlayerInventory/${inventoryItemId}`, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${BASE44_SERVICE_KEY}`,
+        },
+      });
 
-        if (this.playerTrades.has(initiatorPlayerId)) {
-            socket.emit('trade_error', { error: 'אתה כבר בהחלפה' });
-            return;
-        }
+      if (!invResponse.ok) continue;
+      
+      const invItem = await invResponse.json();
+      const itemDetails = itemsMap.get(invItem.item_id);
+      
+      if (!itemDetails) continue;
 
-        const targetSocketId = this.getSocketIdByPlayerId(target_player_id);
-        if (!targetSocketId) {
-            socket.emit('trade_error', { error: 'השחקן לא מחובר' });
-            return;
-        }
-        
-        const targetSocket = this.io.sockets.sockets.get(targetSocketId);
-        if (!targetSocket) {
-            socket.emit('trade_error', { error: 'השחקן לא מחובר' });
-            return;
-        }
-        
-        const targetPlayerData = this.players.get(targetSocketId);
+      const itemCode = itemDetails.item_code;
+      const itemType = itemDetails.type;
 
-        if (this.playerTrades.has(target_player_id)) {
-            socket.emit('trade_error', { error: 'השחקן כבר בהחלפה' });
-            return;
-        }
+      let isEquipped = false;
+      let equipmentSlot = null;
 
-        const tradeId = `trade_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      switch (itemType) {
+        case 'hair':
+          if (player.equipment.equipped_hair === itemCode) {
+            isEquipped = true;
+            equipmentSlot = 'equipped_hair';
+          }
+          break;
+        case 'top':
+          if (player.equipment.equipped_top === itemCode) {
+            isEquipped = true;
+            equipmentSlot = 'equipped_top';
+          }
+          break;
+        case 'pants':
+          if (player.equipment.equipped_pants === itemCode) {
+            isEquipped = true;
+            equipmentSlot = 'equipped_pants';
+          }
+          break;
+        case 'gloves':
+          if (player.equipment.equipped_gloves === itemCode) {
+            isEquipped = true;
+            equipmentSlot = 'equipped_gloves';
+          }
+          break;
+        case 'hat':
+          if (player.equipment.equipped_hat === itemCode) {
+            isEquipped = true;
+            equipmentSlot = 'equipped_hat';
+          }
+          break;
+        case 'face':
+          if (player.equipment.equipped_face === itemCode) {
+            isEquipped = true;
+            equipmentSlot = 'equipped_face';
+          }
+          break;
+        case 'necklace':
+          if (player.equipment.equipped_necklace === itemCode) {
+            isEquipped = true;
+            equipmentSlot = 'equipped_necklace';
+          }
+          break;
+        case 'halo':
+          if (player.equipment.equipped_halo === itemCode) {
+            isEquipped = true;
+            equipmentSlot = 'equipped_halo';
+          }
+          break;
+        case 'shoes':
+          if (player.equipment.equipped_shoes === itemCode) {
+            isEquipped = true;
+            equipmentSlot = 'equipped_shoes';
+          }
+          break;
+        case 'accessory':
+          if (player.equipment.equipped_accessory === itemCode) {
+            isEquipped = true;
+            equipmentSlot = 'equipped_accessory';
+          }
+          break;
+      }
 
-        const trade = {
-            id: tradeId,
-            status: 'pending',
-            initiator: {
-                id: initiatorPlayerId,
-                username: socket.playerData.username,
-                equipment: {
-                    skin_code: socket.playerData.skin_code,
-                    equipped_hair: socket.playerData.equipped_hair,
-                    equipped_top: socket.playerData.equipped_top,
-                    equipped_pants: socket.playerData.equipped_pants,
-                    equipped_hat: socket.playerData.equipped_hat,
-                    equipped_necklace: socket.playerData.equipped_necklace,
-                    equipped_halo: socket.playerData.equipped_halo,
-                    equipped_shoes: socket.playerData.equipped_shoes,
-                    equipped_gloves: socket.playerData.equipped_gloves,
-                    equipped_accessory: socket.playerData.equipped_accessory
-                },
-                locked: false,
-                ready: false
-            },
-            receiver: {
-                id: target_player_id,
-                username: targetPlayerData.username,
-                equipment: {
-                    skin_code: targetPlayerData.skin_code,
-                    equipped_hair: targetPlayerData.equipped_hair,
-                    equipped_top: targetPlayerData.equipped_top,
-                    equipped_pants: targetPlayerData.equipped_pants,
-                    equipped_hat: targetPlayerData.equipped_hat,
-                    equipped_necklace: targetPlayerData.equipped_necklace,
-                    equipped_halo: targetPlayerData.equipped_halo,
-                    equipped_shoes: targetPlayerData.equipped_shoes,
-                    equipped_gloves: targetPlayerData.equipped_gloves,
-                    equipped_accessory: targetPlayerData.equipped_accessory
-                },
-                locked: false,
-                ready: false
-            },
-            initiator_offer: { items: [], coins: 0, gems: 0 },
-            receiver_offer: { items: [], coins: 0, gems: 0 },
-            created_at: new Date().toISOString()
-        };
-
-        this.trades.set(tradeId, trade);
-        this.playerTrades.set(initiatorPlayerId, tradeId);
-        this.playerTrades.set(target_player_id, tradeId);
-
-        socket.emit('trade_request_sent', { trade_id: tradeId });
-        targetSocket.emit('trade_request_received', { 
-            trade,
-            from_player: socket.playerData.username
+      if (isEquipped) {
+        equippedItems.push({
+          inventoryItemId,
+          itemCode,
+          itemType,
+          equipmentSlot,
         });
-
-        console.log(`✅ Trade created: ${tradeId}`);
+      }
     }
 
-    handleTradeAccept(socket, data) {
-        const { trade_id } = data;
-        const trade = this.trades.get(trade_id);
-
-        if (!trade) {
-            socket.emit('trade_error', { error: 'החלפה לא קיימת' });
-            return;
-        }
-
-        if (trade.receiver.id !== socket.playerId) {
-            return;
-        }
-
-        trade.status = 'active';
-
-        const initiatorSocketId = this.getSocketIdByPlayerId(trade.initiator.id);
-        const receiverSocketId = this.getSocketIdByPlayerId(trade.receiver.id);
-        
-        const initiatorSocket = initiatorSocketId ? this.io.sockets.sockets.get(initiatorSocketId) : null;
-        const receiverSocket = receiverSocketId ? this.io.sockets.sockets.get(receiverSocketId) : null;
-
-        if (initiatorSocket) initiatorSocket.emit('trade_accepted', { trade });
-        if (receiverSocket) receiverSocket.emit('trade_accepted', { trade });
-
-        console.log(`✅ Trade accepted: ${trade_id}`);
-    }
-
-    handleOfferUpdate(socket, data) {
-        const { trade_id, offer } = data;
-        const trade = this.trades.get(trade_id);
-
-        if (!trade || trade.status !== 'active') return;
-
-        const isInitiator = trade.initiator.id === socket.playerId;
-        
-        if (isInitiator) {
-            if (trade.initiator.locked) return;
-            trade.initiator_offer = offer;
-        } else {
-            if (trade.receiver.locked) return;
-            trade.receiver_offer = offer;
-        }
-
-        this._broadcastTradeUpdate(trade);
-    }
-
-    handleLockUpdate(socket, data) {
-        const { trade_id, locked } = data;
-        const trade = this.trades.get(trade_id);
-
-        if (!trade || trade.status !== 'active') return;
-
-        const isInitiator = trade.initiator.id === socket.playerId;
-        
-        if (isInitiator) {
-            trade.initiator.locked = locked;
-            if (!locked) trade.initiator.ready = false;
-        } else {
-            trade.receiver.locked = locked;
-            if (!locked) trade.receiver.ready = false;
-        }
-
-        this._broadcastTradeUpdate(trade);
-    }
-
-    handleReadyUpdate(socket, data) {
-        const { trade_id, ready } = data;
-        const trade = this.trades.get(trade_id);
-
-        if (!trade || trade.status !== 'active') return;
-
-        const isInitiator = trade.initiator.id === socket.playerId;
-        
-        if (!trade.initiator.locked || !trade.receiver.locked) return;
-
-        if (isInitiator) {
-            trade.initiator.ready = ready;
-        } else {
-            trade.receiver.ready = ready;
-        }
-
-        this._broadcastTradeUpdate(trade);
-
-        if (trade.initiator.ready && trade.receiver.ready) {
-            this._executeTrade(trade);
-        }
-    }
-
-    handleTradeCancel(socket, data) {
-        const { trade_id } = data;
-        const trade = this.trades.get(trade_id);
-
-        if (!trade) return;
-
-        const initiatorSocketId = this.getSocketIdByPlayerId(trade.initiator.id);
-        const receiverSocketId = this.getSocketIdByPlayerId(trade.receiver.id);
-        
-        const initiatorSocket = initiatorSocketId ? this.io.sockets.sockets.get(initiatorSocketId) : null;
-        const receiverSocket = receiverSocketId ? this.io.sockets.sockets.get(receiverSocketId) : null;
-
-        if (initiatorSocket) initiatorSocket.emit('trade_cancelled', { reason: 'השותף ביטל' });
-        if (receiverSocket) receiverSocket.emit('trade_cancelled', { reason: 'השותף ביטל' });
-
-        this._cleanupTrade(trade_id);
-
-        console.log(`❌ Trade cancelled: ${trade_id}`);
-    }
-
-    handleTradeChat(socket, data) {
-        const { trade_id, message } = data;
-        const trade = this.trades.get(trade_id);
-
-        if (!trade) return;
-
-        const chatMessage = {
-            trade_id,
-            sender_id: socket.playerId,
-            sender_name: socket.playerData.username,
-            message: message.trim(),
-            timestamp: Date.now()
-        };
-
-        console.log(`💬 Trade chat [${trade_id}]: ${chatMessage.sender_name}: ${chatMessage.message}`);
-
-        const initiatorSocketId = this.getSocketIdByPlayerId(trade.initiator.id);
-        const receiverSocketId = this.getSocketIdByPlayerId(trade.receiver.id);
-        
-        const initiatorSocket = initiatorSocketId ? this.io.sockets.sockets.get(initiatorSocketId) : null;
-        const receiverSocket = receiverSocketId ? this.io.sockets.sockets.get(receiverSocketId) : null;
-
-        if (initiatorSocket) {
-            initiatorSocket.emit('trade_chat_message', chatMessage);
-        }
-        if (receiverSocket) {
-            receiverSocket.emit('trade_chat_message', chatMessage);
-        }
-    }
-
-    handlePlayerDisconnect(playerId) {
-        const tradeId = this.playerTrades.get(playerId);
-        if (!tradeId) return;
-
-        const trade = this.trades.get(tradeId);
-        if (!trade) return;
-
-        const otherPlayerId = trade.initiator.id === playerId ? trade.receiver.id : trade.initiator.id;
-        const otherSocketId = this.getSocketIdByPlayerId(otherPlayerId);
-        const otherSocket = otherSocketId ? this.io.sockets.sockets.get(otherSocketId) : null;
-
-        if (otherSocket) {
-            otherSocket.emit('trade_cancelled', { reason: 'השותף התנתק' });
-        }
-
-        this._cleanupTrade(tradeId);
-    }
-
-    async _executeTrade(trade) {
-        trade.status = 'executing';
-        console.log(`⚙️ Executing trade: ${trade.id}`);
-
-        try {
-            const response = await fetch(`${this.BASE44_API_URL}/functions/executeTrade`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${this.BASE44_SERVICE_KEY}`
-                },
-                body: JSON.stringify({
-                    trade_id: trade.id,
-                    initiator_id: trade.initiator.id,
-                    receiver_id: trade.receiver.id,
-                    initiator_offer: trade.initiator_offer,
-                    receiver_offer: trade.receiver_offer
-                })
-            });
-            
-            const result = await response.json();
-
-            if (result?.success || result?.data?.success) {
-                const initiatorSocketId = this.getSocketIdByPlayerId(trade.initiator.id);
-                const receiverSocketId = this.getSocketIdByPlayerId(trade.receiver.id);
-                
-                const initiatorSocket = initiatorSocketId ? this.io.sockets.sockets.get(initiatorSocketId) : null;
-                const receiverSocket = receiverSocketId ? this.io.sockets.sockets.get(receiverSocketId) : null;
-
-                if (initiatorSocket) initiatorSocket.emit('trade_completed_successfully', { trade });
-                if (receiverSocket) receiverSocket.emit('trade_completed_successfully', { trade });
-
-                console.log(`✅ Trade executed successfully: ${trade.id}`);
-            } else {
-                throw new Error(result.data?.error || 'Trade execution failed');
-            }
-        } catch (error) {
-            console.error(`❌ Trade execution failed:`, error);
-            
-            const initiatorSocketId = this.getSocketIdByPlayerId(trade.initiator.id);
-            const receiverSocketId = this.getSocketIdByPlayerId(trade.receiver.id);
-            
-            const initiatorSocket = initiatorSocketId ? this.io.sockets.sockets.get(initiatorSocketId) : null;
-            const receiverSocket = receiverSocketId ? this.io.sockets.sockets.get(receiverSocketId) : null;
-
-            if (initiatorSocket) initiatorSocket.emit('trade_error', { error: 'שגיאה בביצוע החלפה' });
-            if (receiverSocket) receiverSocket.emit('trade_error', { error: 'שגיאה בביצוע החלפה' });
-        } finally {
-            this._cleanupTrade(trade.id);
-        }
-    }
-
-    _broadcastTradeUpdate(trade) {
-        const initiatorSocketId = this.getSocketIdByPlayerId(trade.initiator.id);
-        const receiverSocketId = this.getSocketIdByPlayerId(trade.receiver.id);
-        
-        const initiatorSocket = initiatorSocketId ? this.io.sockets.sockets.get(initiatorSocketId) : null;
-        const receiverSocket = receiverSocketId ? this.io.sockets.sockets.get(receiverSocketId) : null;
-
-        if (initiatorSocket) initiatorSocket.emit('trade_status_updated', trade);
-        if (receiverSocket) receiverSocket.emit('trade_status_updated', trade);
-    }
-
-    _cleanupTrade(tradeId) {
-        const trade = this.trades.get(tradeId);
-        if (!trade) return;
-
-        this.playerTrades.delete(trade.initiator.id);
-        this.playerTrades.delete(trade.receiver.id);
-        this.trades.delete(tradeId);
-
-        console.log(`🧹 Trade cleaned up: ${tradeId}`);
-    }
+    return equippedItems;
+  } catch (error) {
+    console.error("Error checking equipped items:", error);
+    return [];
+  }
 }
 
-module.exports = new TradeManager();
+async function removeEquippedItems(playerId, equippedItems) {
+  const socketId = getSocketIdByPlayerId(playerId);
+  if (!socketId) return;
+
+  const player = players.get(socketId);
+  if (!player) return;
+
+  const updates = {};
+  
+  for (const item of equippedItems) {
+    if (item.equipmentSlot && player.equipment[item.equipmentSlot]) {
+      console.log(`🔧 Removing ${item.equipmentSlot} (${item.itemCode}) from ${player.username}`);
+      player.equipment[item.equipmentSlot] = null;
+      updates[item.equipmentSlot] = null;
+    }
+  }
+
+  if (Object.keys(updates).length > 0) {
+    try {
+      await fetch(`${BASE44_API_URL}/entities/Player/${playerId}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${BASE44_SERVICE_KEY}`,
+        },
+        body: JSON.stringify(updates),
+      });
+      console.log(`💾 Updated DB for ${player.username}:`, updates);
+    } catch (error) {
+      console.error(`❌ Failed to update DB for ${player.username}:`, error);
+    }
+  }
+}
+
+async function executeTradeOnBase44(trade) {
+  try {
+    const resp = await fetch(`${BASE44_API_URL}/functions/executeTrade`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${BASE44_SERVICE_KEY}`,
+      },
+      body: JSON.stringify({
+        initiator_id: trade.initiatorId,
+        receiver_id: trade.receiverId,
+        initiator_offer_items: trade.initiator_offer.items || [],
+        initiator_offer_coins: trade.initiator_offer.coins || 0,
+        initiator_offer_gems: trade.initiator_offer.gems || 0,
+        receiver_offer_items: trade.receiver_offer.items || [],
+        receiver_offer_coins: trade.receiver_offer.coins || 0,
+        receiver_offer_gems: trade.receiver_offer.gems || 0,
+      }),
+    });
+    const json = await resp.json();
+    if (!resp.ok) throw new Error(json?.error || `HTTP ${resp.status}`);
+    return { success: true, data: json };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+}
+
+function broadcastTradeUpdate(tradeId) {
+  const trade = activeTrades.get(tradeId);
+  if (!trade) return;
+  
+  const initSid = getSocketIdByPlayerId(trade.initiatorId);
+  const recvSid = getSocketIdByPlayerId(trade.receiverId);
+  
+  const initiatorPlayer = players.get(initSid);
+  const receiverPlayer = players.get(recvSid);
+  
+  const payload = {
+    id: tradeId,
+    status: trade.status,
+    initiator: {
+      id: trade.initiatorId,
+      username: initiatorPlayer?.username || "Unknown",
+      locked: trade.initiator_locked || false,
+      ready: trade.initiator_ready || false,
+      equipment: initiatorPlayer?.equipment || {},
+    },
+    receiver: {
+      id: trade.receiverId,
+      username: receiverPlayer?.username || "Unknown",
+      locked: trade.receiver_locked || false,
+      ready: trade.receiver_ready || false,
+      equipment: receiverPlayer?.equipment || {},
+    },
+    initiator_offer: trade.initiator_offer,
+    receiver_offer: trade.receiver_offer,
+  };
+  
+  if (initSid) {
+    io.to(initSid).emit("trade_status_updated", payload);
+  }
+  if (recvSid) {
+    io.to(recvSid).emit("trade_status_updated", payload);
+  }
+}
+
+module.exports = {
+  initialize: (ioInstance, apiUrl, serviceKey, playersMap, getSocketIdFn) => {
+    io = ioInstance;
+    BASE44_API_URL = apiUrl;
+    BASE44_SERVICE_KEY = serviceKey;
+    players = playersMap;
+    getSocketIdByPlayerId = getSocketIdFn;
+    console.log("✅ Trade Manager Initialized");
+  },
+
+  getActiveTradesCount: () => activeTrades.size,
+
+  handleDisconnect: (socketId) => {
+    const p = players.get(socketId);
+    if (!p) return;
+
+    if (p.activeTradeId) {
+      const trade = activeTrades.get(p.activeTradeId);
+      if (trade) {
+        const otherPlayerId = trade.initiatorId === p.playerId ? trade.receiverId : trade.initiatorId;
+        const otherSid = getSocketIdByPlayerId(otherPlayerId);
+        
+        if (otherSid) {
+          const otherPlayer = players.get(otherSid);
+          if (otherPlayer) otherPlayer.activeTradeId = null;
+          
+          io.to(otherSid).emit("trade_status_updated", {
+            id: p.activeTradeId,
+            status: "cancelled",
+            reason: "participant_disconnected"
+          });
+        }
+        
+        activeTrades.delete(p.activeTradeId);
+      }
+    }
+  },
+
+  setupSocketHandlers: (socket) => {
+    // ========== TRADE REQUEST ==========
+    socket.on("trade_request", (data = {}) => {
+      const initiator = players.get(socket.id);
+      if (!initiator) return;
+
+      const receiverId = data?.receiver?.id;
+      if (!receiverId) return;
+
+      const recvSid = getSocketIdByPlayerId(receiverId);
+      if (!recvSid) return;
+
+      const receiver = players.get(recvSid);
+      if (!receiver) return;
+
+      const tradeId = `trade_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+      
+      const trade = {
+        id: tradeId,
+        initiatorId: initiator.playerId,
+        receiverId: receiver.playerId,
+        initiator_offer: { items: [], coins: 0, gems: 0 },
+        receiver_offer: { items: [], coins: 0, gems: 0 },
+        initiator_locked: false,
+        receiver_locked: false,
+        initiator_ready: false,
+        receiver_ready: false,
+        status: "pending",
+      };
+      
+      activeTrades.set(tradeId, trade);
+      initiator.activeTradeId = tradeId;
+      receiver.activeTradeId = tradeId;
+
+      console.log(`🔄 Trade Request: ${initiator.username} → ${receiver.username} (${tradeId})`);
+
+      io.to(recvSid).emit("trade_request_received", {
+        trade_id: tradeId,
+        initiator: {
+          id: initiator.playerId,
+          username: initiator.username,
+          equipment: initiator.equipment,
+        },
+      });
+    });
+
+    // ========== TRADE ACCEPT ==========
+    socket.on("trade_accept", (data = {}) => {
+      const trade = activeTrades.get(data.trade_id);
+      if (!trade) return;
+
+      trade.status = "started";
+      console.log(`✅ Trade Accepted: ${data.trade_id}`);
+      
+      // Join both players to trade room
+      const initSid = getSocketIdByPlayerId(trade.initiatorId);
+      const recvSid = getSocketIdByPlayerId(trade.receiverId);
+      
+      if (initSid) {
+        io.sockets.sockets.get(initSid)?.join(`trade_${data.trade_id}`);
+        console.log(`🚪 Initiator joined trade room: trade_${data.trade_id}`);
+      }
+      if (recvSid) {
+        io.sockets.sockets.get(recvSid)?.join(`trade_${data.trade_id}`);
+        console.log(`🚪 Receiver joined trade room: trade_${data.trade_id}`);
+      }
+      
+      broadcastTradeUpdate(data.trade_id);
+    });
+
+    // ========== TRADE OFFER UPDATE ==========
+    socket.on("trade_offer_update", (data = {}) => {
+      const p = players.get(socket.id);
+      if (!p) return;
+
+      const trade = activeTrades.get(data.trade_id);
+      if (!trade) return;
+
+      // SECURITY: If anyone changes the offer, reset ALL locks and confirmations
+      trade.initiator_locked = false;
+      trade.receiver_locked = false;
+      trade.initiator_ready = false;
+      trade.receiver_ready = false;
+
+      if (trade.initiatorId === p.playerId) {
+        trade.initiator_offer = {
+          items: data.offer?.items || [],
+          coins: data.offer?.coins || 0,
+          gems: data.offer?.gems || 0,
+        };
+        console.log(`🔄 ${p.username} updated offer: ${trade.initiator_offer.items.length} items, ${trade.initiator_offer.coins} coins`);
+      } else if (trade.receiverId === p.playerId) {
+        trade.receiver_offer = {
+          items: data.offer?.items || [],
+          coins: data.offer?.coins || 0,
+          gems: data.offer?.gems || 0,
+        };
+        console.log(`🔄 ${p.username} updated offer: ${trade.receiver_offer.items.length} items, ${trade.receiver_offer.coins} coins`);
+      }
+
+      broadcastTradeUpdate(data.trade_id);
+    });
+
+    // ========== TRADE LOCK UPDATE ==========
+    socket.on("trade_lock_update", (data = {}) => {
+      const p = players.get(socket.id);
+      if (!p) return;
+
+      const trade = activeTrades.get(data.trade_id);
+      if (!trade) return;
+
+      const isLocked = !!data.locked;
+
+      if (trade.initiatorId === p.playerId) {
+        trade.initiator_locked = isLocked;
+        // If unlocking, also remove ready status
+        if (!isLocked) trade.initiator_ready = false;
+        console.log(`🔒 ${p.username} locked: ${isLocked}`);
+      } else if (trade.receiverId === p.playerId) {
+        trade.receiver_locked = isLocked;
+        // If unlocking, also remove ready status
+        if (!isLocked) trade.receiver_ready = false;
+        console.log(`🔒 ${p.username} locked: ${isLocked}`);
+      }
+
+      broadcastTradeUpdate(data.trade_id);
+    });
+
+    // ========== TRADE READY UPDATE ==========
+    socket.on("trade_ready_update", async (data = {}) => {
+      const p = players.get(socket.id);
+      if (!p) return;
+
+      const trade = activeTrades.get(data.trade_id);
+      if (!trade) return;
+
+      // SECURITY: Can only confirm if BOTH parties are locked
+      if (!trade.initiator_locked || !trade.receiver_locked) {
+        console.log(`⚠️ ${p.username} tried to confirm but trade is not fully locked.`);
+        return;
+      }
+
+      if (trade.initiatorId === p.playerId) {
+        trade.initiator_ready = data.ready;
+        console.log(`${data.ready ? '✅' : '❌'} ${p.username} confirmed: ${data.ready}`);
+      } else if (trade.receiverId === p.playerId) {
+        trade.receiver_ready = data.ready;
+        console.log(`${data.ready ? '✅' : '❌'} ${p.username} confirmed: ${data.ready}`);
+      }
+
+      broadcastTradeUpdate(data.trade_id);
+
+      if (trade.initiator_ready && trade.receiver_ready) {
+        console.log(`🎉 Executing trade ${data.trade_id}...`);
+        
+        trade.status = "executing";
+        broadcastTradeUpdate(data.trade_id);
+
+        const [initiatorEquipped, receiverEquipped] = await Promise.all([
+          getEquippedItemsFromOffer(trade.initiatorId, trade.initiator_offer.items),
+          getEquippedItemsFromOffer(trade.receiverId, trade.receiver_offer.items),
+        ]);
+
+        console.log(`👕 Initiator equipped items:`, initiatorEquipped.length);
+        console.log(`👕 Receiver equipped items:`, receiverEquipped.length);
+
+        executeTradeOnBase44(trade).then(async (result) => {
+          if (result.success) {
+            console.log(`✅ Trade Completed: ${data.trade_id}`);
+            
+            const initSid = getSocketIdByPlayerId(trade.initiatorId);
+            const recvSid = getSocketIdByPlayerId(trade.receiverId);
+            
+            await Promise.all([
+              removeEquippedItems(trade.initiatorId, initiatorEquipped),
+              removeEquippedItems(trade.receiverId, receiverEquipped),
+            ]);
+
+            const initiatorPlayer = players.get(initSid);
+            const receiverPlayer = players.get(recvSid);
+            
+            if (initSid) {
+              if (initiatorPlayer) {
+                initiatorPlayer.activeTradeId = null;
+                
+                if (initiatorEquipped.length > 0) {
+                  io.to(initSid).emit("items_unequipped", {
+                    items: initiatorEquipped.map(i => i.equipmentSlot),
+                    equipment: initiatorPlayer.equipment,
+                  });
+                }
+              }
+              io.sockets.sockets.get(initSid)?.leave(`trade_${data.trade_id}`);
+              io.to(initSid).emit("trade_completed_successfully", { trade_id: data.trade_id });
+            }
+            
+            if (recvSid) {
+              if (receiverPlayer) {
+                receiverPlayer.activeTradeId = null;
+                
+                if (receiverEquipped.length > 0) {
+                  io.to(recvSid).emit("items_unequipped", {
+                    items: receiverEquipped.map(i => i.equipmentSlot),
+                    equipment: receiverPlayer.equipment,
+                  });
+                }
+              }
+              io.sockets.sockets.get(recvSid)?.leave(`trade_${data.trade_id}`);
+              io.to(recvSid).emit("trade_completed_successfully", { trade_id: data.trade_id });
+            }
+
+            if (initiatorPlayer && initiatorEquipped.length > 0) {
+              io.to(initiatorPlayer.current_area).emit("player_update", {
+                id: initiatorPlayer.playerId,
+                playerId: initiatorPlayer.playerId,
+                socketId: initSid,
+                equipment: initiatorPlayer.equipment,
+              });
+            }
+
+            if (receiverPlayer && receiverEquipped.length > 0) {
+              io.to(receiverPlayer.current_area).emit("player_update", {
+                id: receiverPlayer.playerId,
+                playerId: receiverPlayer.playerId,
+                socketId: recvSid,
+                equipment: receiverPlayer.equipment,
+              });
+            }
+            
+            activeTrades.delete(data.trade_id);
+          } else {
+            console.error(`❌ Trade Failed: ${data.trade_id} - ${result.error}`);
+            
+            trade.status = "failed";
+            const initSid = getSocketIdByPlayerId(trade.initiatorId);
+            const recvSid = getSocketIdByPlayerId(trade.receiverId);
+            
+            const errorPayload = {
+              id: data.trade_id,
+              status: "failed",
+              reason: result.error
+            };
+            
+            if (initSid) {
+              const initPlayer = players.get(initSid);
+              if (initPlayer) initPlayer.activeTradeId = null;
+              io.to(initSid).emit("trade_status_updated", errorPayload);
+            }
+            
+            if (recvSid) {
+              const recvPlayer = players.get(recvSid);
+              if (recvPlayer) recvPlayer.activeTradeId = null;
+              io.to(recvSid).emit("trade_status_updated", errorPayload);
+            }
+            
+            activeTrades.delete(data.trade_id);
+          }
+        });
+      }
+    });
+
+    // ========== TRADE CANCEL ==========
+    socket.on("trade_cancel", (data = {}) => {
+      const trade = activeTrades.get(data.trade_id);
+      if (!trade) return;
+
+      const p = players.get(socket.id);
+      console.log(`❌ Trade Cancelled: ${data.trade_id} by ${p?.username || 'unknown'}`);
+
+      const initSid = getSocketIdByPlayerId(trade.initiatorId);
+      const recvSid = getSocketIdByPlayerId(trade.receiverId);
+      
+      // Leave trade room
+      if (initSid) {
+        const initPlayer = players.get(initSid);
+        if (initPlayer) initPlayer.activeTradeId = null;
+        io.sockets.sockets.get(initSid)?.leave(`trade_${data.trade_id}`);
+        io.to(initSid).emit("trade_status_updated", {
+          id: data.trade_id,
+          status: "cancelled",
+          reason: data.reason || "cancelled"
+        });
+      }
+      
+      if (recvSid) {
+        const recvPlayer = players.get(recvSid);
+        if (recvPlayer) recvPlayer.activeTradeId = null;
+        io.sockets.sockets.get(recvSid)?.leave(`trade_${data.trade_id}`);
+        io.to(recvSid).emit("trade_status_updated", {
+          id: data.trade_id,
+          status: "cancelled",
+          reason: data.reason || "cancelled"
+        });
+      }
+      
+      activeTrades.delete(data.trade_id);
+    });
+
+    // ========== TRADE CHAT ==========
+    socket.on("trade_chat", (data = {}) => {
+      const p = players.get(socket.id);
+      if (!p) {
+          console.log("❌ Trade Chat: Player not found");
+          return;
+      }
+
+      const trade = activeTrades.get(data.trade_id);
+      if (!trade) {
+          console.log("❌ Trade Chat: Trade not found", data.trade_id);
+          return;
+      }
+
+      // Verify participant
+      if (trade.initiatorId !== p.playerId && trade.receiverId !== p.playerId) {
+          console.log("❌ Trade Chat: Not a participant");
+          return;
+      }
+
+      const message = (data.message || "").toString().trim().slice(0, 100);
+      if (!message) return;
+
+      console.log(`💬 Trade Chat [${trade.id}]: ${p.username}: "${message}"`);
+
+      const chatPayload = {
+        trade_id: trade.id,
+        sender_id: p.playerId,
+        sender_name: p.username,
+        message: message,
+        timestamp: Date.now()
+      };
+
+      // Send directly to both socket IDs
+      const initSid = getSocketIdByPlayerId(trade.initiatorId);
+      const recvSid = getSocketIdByPlayerId(trade.receiverId);
+      
+      console.log(`📤 Sending to initiator: ${initSid}, receiver: ${recvSid}`);
+      
+      if (initSid) {
+        const initSocket = io.sockets.sockets.get(initSid);
+        if (initSocket) {
+          initSocket.emit("trade_chat_message", chatPayload);
+          console.log(`✅ Sent to initiator ${initSid}`);
+        } else {
+          console.log(`❌ Initiator socket ${initSid} not found`);
+        }
+      }
+      if (recvSid) {
+        const recvSocket = io.sockets.sockets.get(recvSid);
+        if (recvSocket) {
+          recvSocket.emit("trade_chat_message", chatPayload);
+          console.log(`✅ Sent to receiver ${recvSid}`);
+        } else {
+          console.log(`❌ Receiver socket ${recvSid} not found`);
+        }
+      }
+      
+      console.log(`✅ Chat processing complete for trade: ${trade.id}`);
+    });
+  }
+};
