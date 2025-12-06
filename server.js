@@ -2,7 +2,6 @@
 // Touch World - Socket Server v11.7.0 - PLAYER-ONLY SYSTEM + DONUT SYNC FIXED
 // ============================================================================
 
-const setupSystemRoutes = require("./functions/systemRoutes"); // ← NEW
 const { createServer } = require("http");
 const express = require("express");
 const cors = require("cors");
@@ -11,7 +10,7 @@ const { Server } = require("socket.io");
 const fetch = require("node-fetch");
 const donutManager = require("./donutManager");
 const tradeManager = require("./tradeManager");
-
+const potionsManager = require("./potionsManager"); // 🧪 שיקויים
 require("dotenv").config();
 
 const app = express();
@@ -21,7 +20,7 @@ app.use(helmet());
 // ---------- CORS ----------
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || "")
   .split(",")
-  .map(s => s.trim())
+  .map((s) => s.trim())
   .filter(Boolean);
 
 app.use(
@@ -41,12 +40,10 @@ const JWT_SECRET = process.env.JWT_SECRET;
 const VERIFY_TOKEN_URL =
   process.env.VERIFY_TOKEN_URL ||
   "https://base44.app/api/apps/68e269394d8f2fa24e82cd71/functions/verifyWebSocketToken";
-
 const BASE44_SERVICE_KEY = process.env.BASE44_SERVICE_KEY;
 const BASE44_API_URL =
   process.env.BASE44_API_URL ||
   "https://base44.app/api/apps/68e269394d8f2fa24e82cd71";
-
 const HEALTH_KEY = process.env.HEALTH_KEY || "secret-health";
 
 if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
@@ -59,11 +56,12 @@ const VERSION = "11.7.0"; // Slow Donut Spawning Cycle
 // ---------- State ----------
 const players = new Map();
 const chatRateLimit = new Map();
+
 const KEEP_AWAY_RADIUS = 200;
 
+// ---------- Helpers ----------
 const now = () => Date.now();
 
-// ---------- Helpers ----------
 function safePlayerView(p) {
   if (!p) return null;
   return {
@@ -86,7 +84,7 @@ function safePlayerView(p) {
     active_transformation_expires_at: p.active_transformation_expires_at,
     visual_override_data: p.visual_override_data,
     visual_override_expires_at: p.visual_override_expires_at,
-    active_subscription_tier: p.active_subscription_tier || 'none',
+    active_subscription_tier: p.active_subscription_tier || "none",
     subscription_expires_at: p.subscription_expires_at,
   };
 }
@@ -121,8 +119,12 @@ function normalizePlayerShape(playerData) {
       equipped_accessory: playerData?.equipped_accessory,
       ...(playerData?.equipment || {}),
     },
-    position_x: Number.isFinite(playerData?.position_x) ? playerData.position_x : 600,
-    position_y: Number.isFinite(playerData?.position_y) ? playerData.position_y : 400,
+    position_x: Number.isFinite(playerData?.position_x)
+      ? playerData.position_x
+      : 600,
+    position_y: Number.isFinite(playerData?.position_y)
+      ? playerData.position_y
+      : 400,
     direction: playerData?.direction ?? "front",
     keep_away_mode: !!playerData?.keep_away_mode,
     is_invisible: !!playerData?.is_invisible,
@@ -130,7 +132,7 @@ function normalizePlayerShape(playerData) {
     xp: playerData?.xp || 0,
     coins: playerData?.coins || 500,
     gems: playerData?.gems || 10,
-    active_subscription_tier: playerData?.active_subscription_tier || 'none',
+    active_subscription_tier: playerData?.active_subscription_tier || "none",
     subscription_expires_at: playerData?.subscription_expires_at,
   };
 }
@@ -161,6 +163,7 @@ async function verifyTokenWithBase44(token) {
       throw new Error("normalized playerId missing");
     }
 
+    // 🔒 אימות session_id מול הטוקן
     if (result.sessionId && result.player.session_id) {
       if (result.sessionId !== result.player.session_id) {
         throw new Error("Session mismatch - possible token hijacking");
@@ -168,7 +171,7 @@ async function verifyTokenWithBase44(token) {
     }
 
     console.log(`✅ Token OK: ${normalized.username} (${normalized.playerId})`);
-    
+
     return normalized;
   } catch (err) {
     console.error("❌ Token Error:", err.message);
@@ -176,13 +179,170 @@ async function verifyTokenWithBase44(token) {
   }
 }
 
-// ============================================================================
-// LOAD SYSTEM ROUTES (potions / transformations / system updates)
-// ============================================================================
-let io; // declare here so we can pass later
+function calculateDistance(x1, y1, x2, y2) {
+  return Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2));
+}
+
+function calculateSafePosition(playerX, playerY, adminX, adminY, radius) {
+  const dx = playerX - adminX;
+  const dy = playerY - adminY;
+  const distance = Math.sqrt(dx * dx + dy * dy);
+
+  if (distance === 0) {
+    return { x: adminX + radius + 10, y: adminY };
+  }
+
+  const nx = dx / distance;
+  const ny = dy / distance;
+
+  const safeX = adminX + nx * (radius + 20);
+  const safeY = adminY + ny * (radius + 20);
+
+  return { x: safeX, y: safeY };
+}
+
+function pushAwayNearbyPlayers(adminPlayer, areaId, io) {
+  const playersInArea = Array.from(players.values()).filter(
+    (p) =>
+      p.current_area === areaId &&
+      p.playerId !== adminPlayer.playerId &&
+      p.admin_level === "user"
+  );
+
+  const movedPlayers = [];
+
+  for (const player of playersInArea) {
+    const distance = calculateDistance(
+      player.position_x,
+      player.position_y,
+      adminPlayer.position_x,
+      adminPlayer.position_y
+    );
+
+    if (distance < KEEP_AWAY_RADIUS) {
+      const safePos = calculateSafePosition(
+        player.position_x,
+        player.position_y,
+        adminPlayer.position_x,
+        adminPlayer.position_y,
+        KEEP_AWAY_RADIUS
+      );
+
+      player.position_x = safePos.x;
+      player.position_y = safePos.y;
+      player.is_moving = false;
+      player.destination_x = undefined;
+      player.destination_y = undefined;
+
+      movedPlayers.push({
+        id: player.playerId,
+        playerId: player.playerId,
+        socketId: player.socketId,
+        position_x: player.position_x,
+        position_y: player.position_y,
+        is_moving: false,
+        direction: player.direction,
+        animation_frame: "idle",
+      });
+
+      console.log(
+        `🚫 Pushed ${player.username} away from admin ${adminPlayer.username}`
+      );
+    }
+  }
+
+  if (movedPlayers.length > 0) {
+    io.to(areaId).emit("players_moved", movedPlayers);
+  }
+}
+
+// ---------- Health ----------
+app.get("/healthz", (_req, res) => {
+  res.status(200).json({ ok: true, version: VERSION, players: players.size });
+});
+
+app.get("/health", (req, res) => {
+  const key = req.headers["x-health-key"] || req.query.key;
+  if (key !== HEALTH_KEY) return res.status(403).json({ ok: false });
+  res.json({
+    ok: true,
+    version: VERSION,
+    players: players.size,
+    trades: tradeManager.getActiveTradesCount(),
+    list: Array.from(players.values()).map((p) => ({
+      id: p.playerId,
+      user: p.username,
+      area: p.current_area,
+      invisible: p.is_invisible,
+      keepAway: p.keep_away_mode,
+    })),
+  });
+});
+
+// ---------- Broadcast Config Endpoint ----------
+app.post("/broadcast-config", (req, res) => {
+  const key = req.headers["x-health-key"];
+  if (key !== HEALTH_KEY) return res.status(403).json({ ok: false });
+
+  const { type } = req.body;
+  console.log(`⚙️ Broadcasting config update: ${type}`);
+
+  io.emit("config_refresh_required", { type });
+
+  res.json({ ok: true, broadcasted: true });
+});
+
+// ---------- System Update Player Endpoint (לשיקויים/אפקטים חיצוניים) ----------
+app.post("/system/update_player", (req, res) => {
+  const authHeader = req.headers["authorization"];
+  const key =
+    authHeader && authHeader.startsWith("Bearer ")
+      ? authHeader.slice(7)
+      : authHeader;
+
+  if (key !== BASE44_SERVICE_KEY) {
+    console.error("❌ /system/update_player Unauthorized access attempt");
+    return res.status(403).json({ ok: false, error: "Unauthorized" });
+  }
+
+  const { playerId, data } = req.body;
+  if (!playerId || !data) {
+    return res
+      .status(400)
+      .json({ ok: false, error: "Missing playerId or data" });
+  }
+
+  const socketId = getSocketIdByPlayerId(playerId);
+  if (!socketId) {
+    return res.json({ ok: false, error: "Player not connected" });
+  }
+
+  const player = players.get(socketId);
+  if (!player) {
+    return res.json({ ok: false, error: "Player not found" });
+  }
+
+  Object.assign(player, data);
+
+  console.log(
+    `🧪 Potion/System Effect on ${player.username}:`,
+    Object.keys(data)
+  );
+
+  const updatePayload = {
+    id: player.playerId,
+    playerId: player.playerId,
+    socketId: player.socketId,
+    ...data,
+  };
+
+  io.to(player.current_area).emit("player_update", updatePayload);
+
+  res.json({ ok: true });
+});
 
 // ---------- Socket.IO ----------
-io = new Server(httpServer, {
+const io = new Server(httpServer, {
   cors: {
     origin: allowedOrigins.length > 0 ? allowedOrigins : "*",
     methods: ["GET", "POST"],
@@ -192,13 +352,7 @@ io = new Server(httpServer, {
   pingInterval: 25000,
 });
 
-// Install system routes
-setupSystemRoutes(app, io, players, BASE44_SERVICE_KEY, getSocketIdByPlayerId);
-
-// ============================================================================
-// MAIN SOCKET CONNECTION LOGIC
-// ============================================================================
-
+// ---------- Connection ----------
 io.on("connection", async (socket) => {
   const token = socket.handshake.auth?.token;
   if (!token) {
@@ -214,7 +368,7 @@ io.on("connection", async (socket) => {
     return;
   }
 
-  // Kick duplicates
+  // Kick duplicate
   for (const [sid, p] of players.entries()) {
     if (p.playerId === playerData.playerId && sid !== socket.id) {
       console.log(`⚠️ Kicking duplicate session for ${p.username}`);
@@ -224,7 +378,7 @@ io.on("connection", async (socket) => {
     }
   }
 
-  // Register new player
+  // Register player
   const player = {
     socketId: socket.id,
     playerId: playerData.playerId,
@@ -238,22 +392,27 @@ io.on("connection", async (socket) => {
     direction: playerData.direction || "front",
     is_moving: false,
     animation_frame: "idle",
+    destination_x: undefined,
+    destination_y: undefined,
     is_invisible: playerData.is_invisible ?? false,
     keep_away_mode: playerData.keep_away_mode ?? false,
-    active_subscription_tier: playerData.active_subscription_tier || 'none',
+    active_subscription_tier: playerData.active_subscription_tier || "none",
     subscription_expires_at: playerData.subscription_expires_at,
+    _lastMoveLogAt: 0,
   };
 
   players.set(socket.id, player);
   socket.join(player.current_area);
 
   const areaPeers = Array.from(players.values())
-    .filter(p => p.current_area === player.current_area && p.socketId !== socket.id)
+    .filter(
+      (p) => p.current_area === player.current_area && p.socketId !== socket.id
+    )
     .map(safePlayerView);
 
   socket.emit("identify_ok", safePlayerView(player));
   socket.emit("current_players", areaPeers);
-  
+
   const currentDonuts = donutManager.getDonutsForArea(player.current_area);
   socket.emit("donuts_sync", currentDonuts);
 
@@ -261,18 +420,18 @@ io.on("connection", async (socket) => {
 
   console.log(`🟢 Connected: ${player.username} (${player.current_area})`);
 
-  if (donutManager?.setupSocketHandlers) {
+  if (donutManager && typeof donutManager.setupSocketHandlers === "function") {
     donutManager.setupSocketHandlers(socket, players);
   }
 
-  if (tradeManager?.setupSocketHandlers) {
+  if (tradeManager && typeof tradeManager.setupSocketHandlers === "function") {
     tradeManager.setupSocketHandlers(socket);
   }
 
-  // -----------------------------
-  // כל מאזיני הסוקט שלך ממשיכים פה
-  // -----------------------------
-  
+  if (potionsManager && typeof potionsManager.setupSocketHandlers === "function") {
+    potionsManager.setupSocketHandlers(socket, players);
+  }
+
   socket.on("move_to", (data = {}) => {
     const p = players.get(socket.id);
     if (!p) return;
@@ -280,31 +439,208 @@ io.on("connection", async (socket) => {
     let { x, y } = data;
     if (typeof x !== "number" || typeof y !== "number") return;
 
+    if (p.admin_level === "user") {
+      const adminsInArea = Array.from(players.values()).filter(
+        (admin) =>
+          admin.current_area === p.current_area &&
+          admin.admin_level === "admin" &&
+          admin.keep_away_mode === true
+      );
+
+      for (const admin of adminsInArea) {
+        const distanceToAdmin = calculateDistance(
+          x,
+          y,
+          admin.position_x,
+          admin.position_y
+        );
+
+        if (distanceToAdmin < KEEP_AWAY_RADIUS) {
+          socket.emit("keep_away_blocked", {
+            message: `לא ניתן להתקרב למנהל ${admin.username}`,
+            admin_username: admin.username,
+          });
+          return;
+        }
+      }
+    }
+
     p.destination_x = x;
     p.destination_y = y;
     p.is_moving = true;
 
     const dx = x - p.position_x;
     const dy = y - p.position_y;
-
     if (Math.abs(dx) > Math.abs(dy)) {
       p.direction = dx > 0 ? "e" : "w";
-    } else {
+    } else if (Math.abs(dy) > 0) {
       p.direction = dy > 0 ? "s" : "n";
     }
   });
 
-  // כל שאר האירועים שלך כאן...
-  
+  socket.on("player_update", (data = {}) => {
+    const p = players.get(socket.id);
+    if (!p) return;
+
+    if (data.playerId && data.playerId !== p.playerId) {
+      console.error(
+        `⚠️ SECURITY: ${p.username} tried to update another player!`
+      );
+      return;
+    }
+
+    if (Number.isFinite(data.x)) p.position_x = data.x;
+    if (Number.isFinite(data.y)) p.position_y = data.y;
+    if (typeof data.direction === "string") p.direction = data.direction;
+    if (typeof data.is_moving === "boolean") p.is_moving = data.is_moving;
+    if (typeof data.animation_frame === "string")
+      p.animation_frame = data.animation_frame;
+    if (data.equipment && typeof data.equipment === "object")
+      p.equipment = data.equipment;
+
+    if (typeof data.is_invisible === "boolean") {
+      if (p.admin_level === "admin") {
+        p.is_invisible = data.is_invisible;
+      }
+    }
+
+    if (typeof data.keep_away_mode === "boolean") {
+      if (p.admin_level === "admin") {
+        p.keep_away_mode = data.keep_away_mode;
+
+        if (data.keep_away_mode) {
+          pushAwayNearbyPlayers(p, p.current_area, io);
+        }
+      }
+    }
+
+    io.to(p.current_area).emit("player_update", {
+      id: p.playerId,
+      playerId: p.playerId,
+      socketId: p.socketId,
+      equipment: p.equipment,
+      is_invisible: p.is_invisible,
+    });
+  });
+
+  socket.on("admin_kick_player", (data = {}) => {
+    const admin = players.get(socket.id);
+    if (!admin || admin.admin_level !== "admin") return;
+
+    const targetPlayerId = data.target_player_id;
+    if (!targetPlayerId) return;
+
+    const targetSocketId = getSocketIdByPlayerId(targetPlayerId);
+    if (!targetSocketId) return;
+
+    const targetPlayer = players.get(targetSocketId);
+    if (!targetPlayer) return;
+
+    console.log(`👢 Admin ${admin.username} kicked ${targetPlayer.username}`);
+    io.to(targetSocketId).emit("kicked_by_admin");
+
+    setTimeout(() => {
+      io.sockets.sockets.get(targetSocketId)?.disconnect(true);
+      players.delete(targetSocketId);
+    }, 1000);
+  });
+
+  socket.on("chat_message", (data = {}) => {
+    const p = players.get(socket.id);
+    if (!p) return;
+
+    const msg = (data.message ?? data.text ?? "").toString().trim();
+    if (!msg) return;
+
+    const key = `chat_${p.playerId}`;
+    const last = chatRateLimit.get(key) || 0;
+    if (now() - last < 1000) {
+      socket.emit("chat_rate_limited");
+      return;
+    }
+    chatRateLimit.set(key, now());
+
+    const payload = {
+      id: p.playerId,
+      playerId: p.playerId,
+      username: p.username,
+      admin_level: p.admin_level,
+      message: msg,
+      timestamp: Date.now(),
+    };
+
+    io.to(p.current_area).emit("chat_message", payload);
+  });
+
+  socket.on("admin_config_updated", (data = {}) => {
+    const adminPlayer = players.get(socket.id);
+    if (!adminPlayer) return;
+    if (!["admin", "senior_touch"].includes(adminPlayer.admin_level)) return;
+
+    console.log(
+      `⚙️ Admin ${adminPlayer.username} updated config: ${data.type}`
+    );
+
+    io.emit("config_refresh_required", { type: data.type });
+  });
+
+  socket.on("admin_system_message", (messageData = {}) => {
+    const adminPlayer = players.get(socket.id);
+    if (!adminPlayer) return;
+    if (!["admin", "senior_touch"].includes(adminPlayer.admin_level)) return;
+
+    const payload = {
+      id: "system",
+      username: messageData.sender_name || adminPlayer.username,
+      admin_level: adminPlayer.admin_level,
+      message: String(messageData.message || "").slice(0, 300),
+      timestamp: Date.now(),
+    };
+
+    const target = messageData.target_area || "all";
+    if (target === "current") {
+      io.to(adminPlayer.current_area).emit("chat_message", payload);
+    } else {
+      io.emit("chat_message", payload);
+    }
+  });
+
+  socket.on("change_area", (data = {}) => {
+    const p = players.get(socket.id);
+    if (!p) return;
+
+    const newArea = data.newArea;
+    if (!newArea || newArea === p.current_area) return;
+
+    const oldArea = p.current_area;
+    socket.leave(oldArea);
+    p.current_area = newArea;
+    socket.join(newArea);
+
+    socket
+      .to(oldArea)
+      .emit("player_area_changed", { id: p.playerId, playerId: p.playerId });
+
+    const peers = Array.from(players.values())
+      .filter((pp) => pp.current_area === newArea && pp.socketId !== socket.id)
+      .map(safePlayerView);
+
+    socket.emit("current_players", peers);
+    socket.to(newArea).emit("player_joined", safePlayerView(p));
+
+    const currentDonuts = donutManager.getDonutsForArea(newArea);
+    socket.emit("donuts_sync", currentDonuts);
+  });
+
   socket.on("disconnect", (reason) => {
     const p = players.get(socket.id);
     if (!p) return;
 
     console.log(`🔴 Disconnect: ${p.username} | ${reason}`);
-    
+
     socket.to(p.current_area).emit("player_disconnected", p.playerId);
 
-    if (tradeManager?.handleDisconnect) {
+    if (tradeManager && typeof tradeManager.handleDisconnect === "function") {
       tradeManager.handleDisconnect(socket.id);
     }
 
@@ -312,15 +648,16 @@ io.on("connection", async (socket) => {
   });
 });
 
-// ============================================================================
-// GAME LOOP
-// ============================================================================
-
+// ========== GAME LOOP ==========
 setInterval(() => {
   const updatesByArea = new Map();
 
   for (const [sid, player] of players) {
-    if (player.is_moving && player.destination_x !== undefined && player.destination_y !== undefined) {
+    if (
+      player.is_moving &&
+      player.destination_x !== undefined &&
+      player.destination_y !== undefined
+    ) {
       const dx = player.destination_x - player.position_x;
       const dy = player.destination_y - player.position_y;
       const distance = Math.sqrt(dx * dx + dy * dy);
@@ -333,13 +670,47 @@ setInterval(() => {
         player.destination_y = undefined;
       } else {
         let moveSpeed = 10;
-
         if (player.active_transformation_settings?.speed) {
-          moveSpeed *= Number(player.active_transformation_settings.speed) || 1;
+          moveSpeed *=
+            Number(player.active_transformation_settings.speed) || 1;
         }
-        
+
         player.position_x += (dx / distance) * moveSpeed;
         player.position_y += (dy / distance) * moveSpeed;
+      }
+
+      if (player.admin_level === "user") {
+        const adminsInArea = Array.from(players.values()).filter(
+          (admin) =>
+            admin.current_area === player.current_area &&
+            admin.admin_level === "admin" &&
+            admin.keep_away_mode === true
+        );
+
+        for (const admin of adminsInArea) {
+          const distanceToAdmin = calculateDistance(
+            player.position_x,
+            player.position_y,
+            admin.position_x,
+            admin.position_y
+          );
+
+          if (distanceToAdmin < KEEP_AWAY_RADIUS) {
+            const safePos = calculateSafePosition(
+              player.position_x,
+              player.position_y,
+              admin.position_x,
+              admin.position_y,
+              KEEP_AWAY_RADIUS
+            );
+
+            player.position_x = safePos.x;
+            player.position_y = safePos.y;
+            player.is_moving = false;
+            player.destination_x = undefined;
+            player.destination_y = undefined;
+          }
+        }
       }
 
       const update = {
@@ -366,23 +737,44 @@ setInterval(() => {
   }
 }, 50);
 
-// ============================================================================
-// START SERVER
-// ============================================================================
-
+// ---------- Start ----------
 httpServer.listen(PORT, () => {
   console.log(`\n${"★".repeat(60)}`);
   console.log(`🚀 Touch World Server v${VERSION} - Port ${PORT}`);
-  console.log(`👻 Stealth mode ready`);
-  console.log(`🍩 Donut System loaded`);
-  console.log(`💬 Chat sync enabled`);
+  console.log(`✅ PLAYER-ONLY SYSTEM - NO BASE44 USERS!`);
+  console.log(`✅ CUSTOM JWT AUTHENTICATION!`);
+  console.log(
+    `✅ TRADE SYSTEM with EQUIPMENT REMOVAL + DB UPDATE (via tradeManager)!`
+  );
+  console.log(`✅ ADMIN MODERATION enabled!`);
+  console.log(`👻 STEALTH MODE enabled!`);
+  console.log(`🚫 KEEP-AWAY MODE: ${KEEP_AWAY_RADIUS}px!`);
+  console.log(`💬 CHAT BUBBLE SYNC enabled!`);
+  console.log(`🍩 Donut System Integration!`);
+  console.log(`🧪 Potions Manager Integration!`);
   console.log(`${"★".repeat(60)}\n`);
 
-  if (donutManager?.initialize) {
+  if (donutManager && typeof donutManager.initialize === "function") {
     donutManager.initialize(io, BASE44_SERVICE_KEY, BASE44_API_URL);
+  } else {
+    console.error("❌ Donut Manager Initialize function NOT FOUND!");
   }
 
-  if (tradeManager?.initialize) {
-    tradeManager.initialize(io, BASE44_API_URL, BASE44_SERVICE_KEY, players, getSocketIdByPlayerId);
+  if (tradeManager && typeof tradeManager.initialize === "function") {
+    tradeManager.initialize(
+      io,
+      BASE44_API_URL,
+      BASE44_SERVICE_KEY,
+      players,
+      getSocketIdByPlayerId
+    );
+  } else {
+    console.error("❌ Trade Manager Initialize function NOT FOUND!");
+  }
+
+  if (potionsManager && typeof potionsManager.initialize === "function") {
+    potionsManager.initialize(io, players);
+  } else {
+    console.error("❌ Potions Manager Initialize function NOT FOUND!");
   }
 });
