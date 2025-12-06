@@ -10,6 +10,7 @@ const { Server } = require("socket.io");
 const fetch = require("node-fetch");
 const donutManager = require("./donutManager");
 const tradeManager = require("./tradeManager");
+const tradeManager = require("./tradeManager");
 require("dotenv").config();
 
 const app = express();
