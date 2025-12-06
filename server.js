@@ -1,7 +1,7 @@
 // ============================================================================
 // Touch World - Socket Server v11.3.0 - PLAYER-ONLY SYSTEM + DONUT SYNC FIXED
 // ============================================================================
-
+const setupSystemRoutes = require("./functions/systemRoutes");
 const { createServer } = require("http");
 const express = require("express");
 const cors = require("cors");
