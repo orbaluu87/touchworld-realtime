@@ -250,97 +250,26 @@ module.exports = {
     const p = players.get(socketId);
     if (!p) return;
 
-    if (p.activeTradeId) {
-      const trade = activeTrades.get(p.activeTradeId);
-      if (trade) {
+    for (const [tradeId, trade] of activeTrades.entries()) {
+      if (trade.initiatorId === p.playerId || trade.receiverId === p.playerId) {
         const otherPlayerId = trade.initiatorId === p.playerId ? trade.receiverId : trade.initiatorId;
         const otherSid = getSocketIdByPlayerId(otherPlayerId);
         
         if (otherSid) {
-          const otherPlayer = players.get(otherSid);
-          if (otherPlayer) otherPlayer.activeTradeId = null;
-          
           io.to(otherSid).emit("trade_status_updated", {
-            id: p.activeTradeId,
+            id: tradeId,
             status: "cancelled",
             reason: "participant_disconnected"
           });
         }
         
-        activeTrades.delete(p.activeTradeId);
+        activeTrades.delete(tradeId);
+        console.log(`❌ Trade ${tradeId} cancelled due to ${p.username} disconnect`);
       }
     }
   },
 
   setupSocketHandlers: (socket) => {
-    console.log(`🔧 [TradeManager] Setting up socket handlers for socket: ${socket.id}`);
-    
-    // ========== TRADE CHAT ==========
-    socket.on("trade_chat", (data = {}) => {
-      console.log(`🎤 [TradeManager] TRADE CHAT EVENT RECEIVED from ${socket.id}`, data);
-      const p = players.get(socket.id);
-      if (!p) {
-          console.log("❌ Trade Chat: Player not found for socket", socket.id);
-          return;
-      }
-
-      const trade = activeTrades.get(data.trade_id);
-      if (!trade) {
-          console.log("❌ Trade Chat: Trade not found", data.trade_id);
-          console.log("Available trades:", Array.from(activeTrades.keys()));
-          return;
-      }
-
-      // Verify participant
-      if (trade.initiatorId !== p.playerId && trade.receiverId !== p.playerId) {
-          console.log("❌ Trade Chat: Not a participant");
-          return;
-      }
-
-      const message = (data.message || "").toString().trim().slice(0, 100);
-      if (!message) {
-        console.log("❌ Trade Chat: Empty message");
-        return;
-      }
-
-      console.log(`💬 Trade Chat [${trade.id}]: ${p.username}: "${message}"`);
-
-      const chatPayload = {
-        trade_id: trade.id,
-        sender_id: p.playerId,
-        sender_name: p.username,
-        message: message,
-        timestamp: Date.now()
-      };
-
-      // Send directly to both socket IDs
-      const initSid = getSocketIdByPlayerId(trade.initiatorId);
-      const recvSid = getSocketIdByPlayerId(trade.receiverId);
-      
-      console.log(`📤 Sending to initiator: ${initSid}, receiver: ${recvSid}`);
-      
-      if (initSid) {
-        const initSocket = io.sockets.sockets.get(initSid);
-        if (initSocket) {
-          initSocket.emit("trade_chat_message", chatPayload);
-          console.log(`✅ Sent to initiator ${initSid}`);
-        } else {
-          console.log(`❌ Initiator socket ${initSid} not found`);
-        }
-      }
-      if (recvSid) {
-        const recvSocket = io.sockets.sockets.get(recvSid);
-        if (recvSocket) {
-          recvSocket.emit("trade_chat_message", chatPayload);
-          console.log(`✅ Sent to receiver ${recvSid}`);
-        } else {
-          console.log(`❌ Receiver socket ${recvSid} not found`);
-        }
-      }
-      
-      console.log(`✅ Chat processing complete for trade: ${trade.id}`);
-    });
-    
     // ========== TRADE REQUEST ==========
     socket.on("trade_request", (data = {}) => {
       const initiator = players.get(socket.id);
@@ -371,8 +300,6 @@ module.exports = {
       };
       
       activeTrades.set(tradeId, trade);
-      initiator.activeTradeId = tradeId;
-      receiver.activeTradeId = tradeId;
 
       console.log(`🔄 Trade Request: ${initiator.username} → ${receiver.username} (${tradeId})`);
 
@@ -394,7 +321,6 @@ module.exports = {
       trade.status = "started";
       console.log(`✅ Trade Accepted: ${data.trade_id}`);
       
-      // Join both players to trade room
       const initSid = getSocketIdByPlayerId(trade.initiatorId);
       const recvSid = getSocketIdByPlayerId(trade.receiverId);
       
@@ -418,7 +344,6 @@ module.exports = {
       const trade = activeTrades.get(data.trade_id);
       if (!trade) return;
 
-      // SECURITY: If anyone changes the offer, reset ALL locks and confirmations
       trade.initiator_locked = false;
       trade.receiver_locked = false;
       trade.initiator_ready = false;
@@ -455,12 +380,10 @@ module.exports = {
 
       if (trade.initiatorId === p.playerId) {
         trade.initiator_locked = isLocked;
-        // If unlocking, also remove ready status
         if (!isLocked) trade.initiator_ready = false;
         console.log(`🔒 ${p.username} locked: ${isLocked}`);
       } else if (trade.receiverId === p.playerId) {
         trade.receiver_locked = isLocked;
-        // If unlocking, also remove ready status
         if (!isLocked) trade.receiver_ready = false;
         console.log(`🔒 ${p.username} locked: ${isLocked}`);
       }
@@ -476,7 +399,6 @@ module.exports = {
       const trade = activeTrades.get(data.trade_id);
       if (!trade) return;
 
-      // SECURITY: Can only confirm if BOTH parties are locked
       if (!trade.initiator_locked || !trade.receiver_locked) {
         console.log(`⚠️ ${p.username} tried to confirm but trade is not fully locked.`);
         return;
@@ -522,30 +444,22 @@ module.exports = {
             const receiverPlayer = players.get(recvSid);
             
             if (initSid) {
-              if (initiatorPlayer) {
-                initiatorPlayer.activeTradeId = null;
-                
-                if (initiatorEquipped.length > 0) {
-                  io.to(initSid).emit("items_unequipped", {
-                    items: initiatorEquipped.map(i => i.equipmentSlot),
-                    equipment: initiatorPlayer.equipment,
-                  });
-                }
+              if (initiatorEquipped.length > 0 && initiatorPlayer) {
+                io.to(initSid).emit("items_unequipped", {
+                  items: initiatorEquipped.map(i => i.equipmentSlot),
+                  equipment: initiatorPlayer.equipment,
+                });
               }
               io.sockets.sockets.get(initSid)?.leave(`trade_${data.trade_id}`);
               io.to(initSid).emit("trade_completed_successfully", { trade_id: data.trade_id });
             }
             
             if (recvSid) {
-              if (receiverPlayer) {
-                receiverPlayer.activeTradeId = null;
-                
-                if (receiverEquipped.length > 0) {
-                  io.to(recvSid).emit("items_unequipped", {
-                    items: receiverEquipped.map(i => i.equipmentSlot),
-                    equipment: receiverPlayer.equipment,
-                  });
-                }
+              if (receiverEquipped.length > 0 && receiverPlayer) {
+                io.to(recvSid).emit("items_unequipped", {
+                  items: receiverEquipped.map(i => i.equipmentSlot),
+                  equipment: receiverPlayer.equipment,
+                });
               }
               io.sockets.sockets.get(recvSid)?.leave(`trade_${data.trade_id}`);
               io.to(recvSid).emit("trade_completed_successfully", { trade_id: data.trade_id });
@@ -584,14 +498,10 @@ module.exports = {
             };
             
             if (initSid) {
-              const initPlayer = players.get(initSid);
-              if (initPlayer) initPlayer.activeTradeId = null;
               io.to(initSid).emit("trade_status_updated", errorPayload);
             }
             
             if (recvSid) {
-              const recvPlayer = players.get(recvSid);
-              if (recvPlayer) recvPlayer.activeTradeId = null;
               io.to(recvSid).emit("trade_status_updated", errorPayload);
             }
             
@@ -612,10 +522,7 @@ module.exports = {
       const initSid = getSocketIdByPlayerId(trade.initiatorId);
       const recvSid = getSocketIdByPlayerId(trade.receiverId);
       
-      // Leave trade room
       if (initSid) {
-        const initPlayer = players.get(initSid);
-        if (initPlayer) initPlayer.activeTradeId = null;
         io.sockets.sockets.get(initSid)?.leave(`trade_${data.trade_id}`);
         io.to(initSid).emit("trade_status_updated", {
           id: data.trade_id,
@@ -625,8 +532,6 @@ module.exports = {
       }
       
       if (recvSid) {
-        const recvPlayer = players.get(recvSid);
-        if (recvPlayer) recvPlayer.activeTradeId = null;
         io.sockets.sockets.get(recvSid)?.leave(`trade_${data.trade_id}`);
         io.to(recvSid).emit("trade_status_updated", {
           id: data.trade_id,
@@ -636,6 +541,42 @@ module.exports = {
       }
       
       activeTrades.delete(data.trade_id);
+    });
+
+    // ========== TRADE CHAT ==========
+    socket.on("trade_chat", (data = {}) => {
+      const p = players.get(socket.id);
+      if (!p) {
+          console.log("❌ Trade Chat: Player not found");
+          return;
+      }
+
+      const trade = activeTrades.get(data.trade_id);
+      if (!trade) {
+          console.log("❌ Trade Chat: Trade not found", data.trade_id);
+          return;
+      }
+
+      if (trade.initiatorId !== p.playerId && trade.receiverId !== p.playerId) {
+          console.log("❌ Trade Chat: Not a participant");
+          return;
+      }
+
+      const message = (data.message || "").toString().trim().slice(0, 100);
+      if (!message) return;
+
+      console.log(`💬 Trade Chat [${trade.id}]: ${p.username}: "${message}"`);
+
+      const chatPayload = {
+        trade_id: trade.id,
+        sender_id: p.playerId,
+        sender_name: p.username,
+        message: message,
+        timestamp: Date.now()
+      };
+
+      io.to(`trade_${trade.id}`).emit("trade_chat_message", chatPayload);
+      console.log(`✅ Broadcast to trade room: trade_${trade.id}`);
     });
   }
 };
