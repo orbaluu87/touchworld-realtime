@@ -1,5 +1,5 @@
 // ============================================================================
-// Touch World - Socket Server v11.3.0 - PLAYER-ONLY SYSTEM + DONUT SYNC FIXED
+// Touch World - Socket Server v11.8.0 - PLAYER-ONLY SYSTEM + POTION SYSTEM
 // ============================================================================
 
 const { createServer } = require("http");
@@ -51,7 +51,7 @@ if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   process.exit(1);
 }
 
-const VERSION = "11.8.0"; // Added SystemRoutes Integration
+const VERSION = "11.8.0";
 
 // ---------- State ----------
 const players = new Map();
@@ -294,12 +294,8 @@ app.post("/broadcast-config", (req, res) => {
 });
 
 // ========== SYSTEM ROUTES SETUP (POTION SYSTEM) ==========
-if (systemRoutes && typeof systemRoutes.setupRoutes === 'function') {
-    systemRoutes.setupRoutes(app, io, players, getSocketIdByPlayerId, BASE44_SERVICE_KEY);
-    console.log('✅ System Routes (Potion System) initialized');
-} else {
-    console.error('❌ System Routes setupRoutes function NOT FOUND!');
-}
+systemRoutes.setupRoutes(app, io, players, getSocketIdByPlayerId, BASE44_SERVICE_KEY);
+console.log('✅ System Routes (Potion System) initialized');
 
 // ---------- Connection ----------
 io.on("connection", async (socket) => {
