@@ -9,7 +9,6 @@ let apiUrl = null;
 const MIN_INTERVAL = 6000;
 const MAX_INTERVAL = 40000;
 
-// ✅ Initialize
 function initialize(io, key, url) {
     ioRef = io;
     serviceKey = key ? key.trim() : null;
@@ -18,7 +17,6 @@ function initialize(io, key, url) {
     startSpawnLoop();
 }
 
-// ✅ Get donuts for specific area (for sync)
 function getDonutsForArea(areaId) {
     const list = [];
     for (const d of ACTIVE_DONUTS.values()) {
@@ -27,7 +25,6 @@ function getDonutsForArea(areaId) {
     return list;
 }
 
-// ✅ Socket Handlers
 function setupSocketHandlers(socket, players) {
     socket.on('collect_donut', async (data) => {
         const { spawn_id, player_id } = data;
@@ -37,19 +34,16 @@ function setupSocketHandlers(socket, players) {
 
         const donut = ACTIVE_DONUTS.get(spawn_id);
         
-        // Remove & Broadcast
         ACTIVE_DONUTS.delete(spawn_id);
         ioRef.to(donut.area_id).emit('donut_collected', { spawn_id });
         if (donut.area_uuid !== donut.area_id) {
             ioRef.to(donut.area_uuid).emit('donut_collected', { spawn_id });
         }
 
-        // Reward (async)
         rewardPlayer(player_id || player.playerId, player.username, donut);
     });
 }
 
-// ✅ Spawn Loop
 function startSpawnLoop() {
     const delay = Math.floor(Math.random() * (MAX_INTERVAL - MIN_INTERVAL + 1)) + MIN_INTERVAL;
     setTimeout(async () => {
@@ -58,7 +52,6 @@ function startSpawnLoop() {
     }, delay);
 }
 
-// ✅ Main Tick
 async function tick() {
     if (!ioRef) return;
 
@@ -78,9 +71,7 @@ async function tick() {
     }
 }
 
-// ✅ Process Area
 async function processArea(area) {
-    // Get templates
     let templates = [];
     try {
         if (area.decorations) {
@@ -93,7 +84,6 @@ async function processArea(area) {
 
     if (templates.length === 0) return;
 
-    // Clean old version donuts
     const validVersionDonuts = [];
     for (const [id, d] of ACTIVE_DONUTS.entries()) {
         if (d.area_id === area.area_id) {
@@ -106,13 +96,11 @@ async function processArea(area) {
         }
     }
     
-    // Spawn if needed (max 8 per area)
     if (validVersionDonuts.length < 8) {
         spawnDonut(area, templates);
     }
 }
 
-// ✅ Spawn Donut
 function spawnDonut(area, templates) {
     const template = templates[Math.floor(Math.random() * templates.length)];
     const PADDING = 100;
@@ -141,40 +129,98 @@ function spawnDonut(area, templates) {
     console.log(`🍩 Spawned "${donut.collectible_type}" in ${area.area_id}`);
 }
 
-// ✅ Reward Player (calls collectDonut function)
+// 🔑 השינוי המרכזי - שימוש ישיר ב-API במקום קריאה ל-function
 async function rewardPlayer(playerId, username, donut) {
     try {
-        const response = await fetch(`${apiUrl}/functions/collectDonut`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${serviceKey}`
-            },
-            body: JSON.stringify({
-                spawn_id: donut.spawn_id,
-                player_id: playerId,
+        console.log(`[DonutManager] 🎁 Rewarding ${username} for ${donut.collectible_type}`);
+        
+        const existingCounters = await fetchEntities('CollectibleCounter', {
+            user_id: playerId,
+            collectible_type: donut.collectible_type
+        });
+
+        let newQuantity = 1;
+        
+        if (existingCounters.length > 0) {
+            const counter = existingCounters[0];
+            newQuantity = (counter.quantity || 0) + 1;
+            
+            await updateEntity('CollectibleCounter', counter.id, {
+                quantity: newQuantity,
+                username: username
+            });
+            
+            console.log(`[DonutManager] ✅ Updated to ${newQuantity}`);
+        } else {
+            await createEntity('CollectibleCounter', {
+                user_id: playerId,
+                username: username,
                 collectible_type: donut.collectible_type,
                 collectible_name: donut.collectible_type,
-                image_url: donut.image_url
-            })
-        });
-        
-        if (response.ok) {
-            const result = await response.json();
-            console.log(`✅ Rewarded ${username}: ${result.quantity} total`);
+                collectible_image: donut.image_url,
+                quantity: 1
+            });
+            
+            console.log(`[DonutManager] ✅ Created: 1`);
         }
     } catch (e) {
-        console.error("❌ Reward failed:", e);
+        console.error("[DonutManager] ❌ Reward failed:", e);
     }
 }
 
-// Helper: Fetch entities
-async function fetchEntities(entity) {
+// API Helpers
+async function fetchEntities(entity, filter = null) {
+    let url = `${apiUrl}/entities/${entity}`;
+    if (filter) {
+        url += `?query=${encodeURIComponent(JSON.stringify(filter))}`;
+    }
+    
+    const res = await fetch(url, {
+        headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${serviceKey}` 
+        }
+    });
+    
+    return res.ok ? await res.json() : [];
+}
+
+async function createEntity(entity, data) {
     const url = `${apiUrl}/entities/${entity}`;
     const res = await fetch(url, {
-        headers: { 'Authorization': `Bearer ${serviceKey}` }
+        method: 'POST',
+        headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${serviceKey}` 
+        },
+        body: JSON.stringify(data)
     });
-    return res.ok ? await res.json() : [];
+    
+    if (!res.ok) {
+        const text = await res.text();
+        console.error(`[DonutManager] Create ${entity} failed: ${text}`);
+        throw new Error(`Create failed: ${res.statusText}`);
+    }
+    return await res.json();
+}
+
+async function updateEntity(entity, id, data) {
+    const url = `${apiUrl}/entities/${entity}/${id}`;
+    const res = await fetch(url, {
+        method: 'PATCH',
+        headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${serviceKey}` 
+        },
+        body: JSON.stringify(data)
+    });
+    
+    if (!res.ok) {
+        const text = await res.text();
+        console.error(`[DonutManager] Update ${entity} failed: ${text}`);
+        throw new Error(`Update failed: ${res.statusText}`);
+    }
+    return await res.json();
 }
 
 module.exports = { initialize, setupSocketHandlers, getDonutsForArea };
