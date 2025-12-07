@@ -39,7 +39,7 @@ function getDonutsForArea(areaId) {
 function setupSocketHandlers(socket, players) {
     // 1. Handle Collection
     socket.on('collect_donut', async (data) => {
-        const { spawn_id } = data;
+        const { spawn_id, player_id } = data;
         const player = players.get(socket.id);
         
         if (!player) {
@@ -65,8 +65,8 @@ function setupSocketHandlers(socket, players) {
              ioRef.to(donut.area_uuid).emit('donut_collected', { spawn_id });
         }
 
-        // Reward Player (Async - doesn't block game flow)
-        rewardPlayer(player.playerId, player.username, donut);
+        // Reward Player (Async - doesn't block game flow) - using player_id from client
+        rewardPlayer(player_id || player.playerId, player.username, donut);
     });
 }
 
@@ -196,54 +196,28 @@ async function rewardPlayer(playerId, username, donut) {
     try {
         console.log(`[DonutManager] Rewarding user ${playerId} (${username}) for ${donut.collectible_type}`);
         
-        // 1. Fetch SPECIFIC counters for this user AND this type
-        // This is scalable even with millions of rows, as we filter by index
-        const existingCounters = await fetchEntities('CollectibleCounter', { 
-            user_id: playerId, 
-            collectible_type: donut.collectible_type 
+        // Call the backend function that uses service role properly
+        const BASE44_FUNCTION_URL = `${apiUrl}/functions/collectDonut`;
+        
+        const response = await fetch(BASE44_FUNCTION_URL, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${serviceKey}`
+            },
+            body: JSON.stringify({
+                spawn_id: donut.spawn_id,
+                area_id: donut.area_id,
+                player_id: playerId
+            })
         });
         
-        if (existingCounters && existingCounters.length > 0) {
-            // Found existing record(s)
-            const mainRecord = existingCounters[0];
-            let totalQuantity = Number(mainRecord.quantity) || 0;
-
-            // HEAL: If duplicates exist (from past bugs), sum them up and delete extra rows
-            if (existingCounters.length > 1) {
-                console.log(`[DonutManager] Found ${existingCounters.length} duplicate rows for ${donut.collectible_type}. Merging...`);
-                
-                for (let i = 1; i < existingCounters.length; i++) {
-                    const dup = existingCounters[i];
-                    totalQuantity += (Number(dup.quantity) || 0);
-                    
-                    // Delete duplicate asynchronously
-                    deleteEntity('CollectibleCounter', dup.id).catch(err => 
-                        console.error(`[DonutManager] Failed to delete duplicate ${dup.id}`, err)
-                    );
-                }
-            }
-
-            // Update the main record with new total + 1
-            const newQuantity = totalQuantity + 1;
-            console.log(`[DonutManager] Updating main counter ${mainRecord.id}. New Total: ${newQuantity}`);
-            
-            await updateEntity('CollectibleCounter', mainRecord.id, {
-                quantity: newQuantity,
-                username: username || mainRecord.username
-            });
-            
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error(`[DonutManager] Reward failed: ${errorText}`);
         } else {
-            // No record exists - Create new one
-            console.log(`[DonutManager] Creating FIRST counter for ${donut.collectible_type}`);
-            
-            await createEntity('CollectibleCounter', {
-                user_id: playerId,
-                username: username || 'Unknown',
-                collectible_type: donut.collectible_type,
-                collectible_name: donut.collectible_type,
-                collectible_image: donut.image_url || '',
-                quantity: 1
-            });
+            const result = await response.json();
+            console.log(`[DonutManager] Reward success: ${result.quantity} total`);
         }
     } catch (e) {
         console.error("[DonutManager] Failed to reward player:", e);
