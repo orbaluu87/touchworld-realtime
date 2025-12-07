@@ -51,7 +51,7 @@ if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   process.exit(1);
 }
 
-const VERSION = "11.7.0"; // Slow Donut Spawning Cycle
+const VERSION = "11.8.0"; // Added SystemRoutes Integration
 
 // ---------- State ----------
 const players = new Map();
@@ -159,7 +159,6 @@ async function verifyTokenWithBase44(token) {
       throw new Error("normalized playerId missing");
     }
 
-    // 🔒 אימות session_id מול הטוקן
     if (result.sessionId && result.player.session_id) {
       if (result.sessionId !== result.player.session_id) {
         throw new Error("Session mismatch - possible token hijacking");
@@ -247,6 +246,17 @@ function pushAwayNearbyPlayers(adminPlayer, areaId, io) {
   }
 }
 
+// ---------- Socket.IO ----------
+const io = new Server(httpServer, {
+  cors: {
+    origin: allowedOrigins.length > 0 ? allowedOrigins : "*",
+    methods: ["GET", "POST"],
+  },
+  transports: ["websocket"],
+  pingTimeout: 60000,
+  pingInterval: 25000,
+});
+
 // ---------- Health ----------
 app.get("/healthz", (_req, res) => {
   res.status(200).json({ ok: true, version: VERSION, players: players.size });
@@ -283,57 +293,13 @@ app.post("/broadcast-config", (req, res) => {
   res.json({ ok: true, broadcasted: true });
 });
 
-// ---------- System Update Player Endpoint ----------
-app.post("/system/update_player", (req, res) => {
-  const authHeader = req.headers["authorization"];
-  const key = authHeader && authHeader.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
-  
-  if (key !== BASE44_SERVICE_KEY) {
-      console.error("❌ /system/update_player Unauthorized access attempt");
-      return res.status(403).json({ ok: false, error: "Unauthorized" });
-  }
-
-  const { playerId, data } = req.body;
-  if (!playerId || !data) {
-      return res.status(400).json({ ok: false, error: "Missing playerId or data" });
-  }
-
-  const socketId = getSocketIdByPlayerId(playerId);
-  if (!socketId) {
-      return res.json({ ok: false, error: "Player not connected" });
-  }
-
-  const player = players.get(socketId);
-  if (!player) {
-      return res.json({ ok: false, error: "Player not found" });
-  }
-
-  Object.assign(player, data);
-  
-  console.log(`🧪 Potion/System Effect on ${player.username}:`, Object.keys(data));
-
-  const updatePayload = {
-      id: player.playerId,
-      playerId: player.playerId,
-      socketId: player.socketId,
-      ...data
-  };
-
-  io.to(player.current_area).emit("player_update", updatePayload);
-
-  res.json({ ok: true });
-});
-
-// ---------- Socket.IO ----------
-const io = new Server(httpServer, {
-  cors: {
-    origin: allowedOrigins.length > 0 ? allowedOrigins : "*",
-    methods: ["GET", "POST"],
-  },
-  transports: ["websocket"],
-  pingTimeout: 60000,
-  pingInterval: 25000,
-});
+// ========== SYSTEM ROUTES SETUP (POTION SYSTEM) ==========
+if (systemRoutes && typeof systemRoutes.setupRoutes === 'function') {
+    systemRoutes.setupRoutes(app, io, players, getSocketIdByPlayerId, BASE44_SERVICE_KEY);
+    console.log('✅ System Routes (Potion System) initialized');
+} else {
+    console.error('❌ System Routes setupRoutes function NOT FOUND!');
+}
 
 // ---------- Connection ----------
 io.on("connection", async (socket) => {
@@ -351,7 +317,6 @@ io.on("connection", async (socket) => {
     return;
   }
 
-  // Kick duplicate
   for (const [sid, p] of players.entries()) {
     if (p.playerId === playerData.playerId && sid !== socket.id) {
       console.log(`⚠️ Kicking duplicate session for ${p.username}`);
@@ -361,7 +326,6 @@ io.on("connection", async (socket) => {
     }
   }
 
-  // Register player
   const player = {
     socketId: socket.id,
     playerId: playerData.playerId,
@@ -407,6 +371,10 @@ io.on("connection", async (socket) => {
 
   if (tradeManager && typeof tradeManager.setupSocketHandlers === 'function') {
       tradeManager.setupSocketHandlers(socket);
+  }
+
+  if (systemRoutes && typeof systemRoutes.setupSocketHandlers === 'function') {
+      systemRoutes.setupSocketHandlers(socket, players);
   }
 
   socket.on("move_to", (data = {}) => {
@@ -706,6 +674,7 @@ httpServer.listen(PORT, () => {
   console.log(`🚫 KEEP-AWAY MODE: ${KEEP_AWAY_RADIUS}px!`);
   console.log(`💬 CHAT BUBBLE SYNC enabled!`);
   console.log(`🍩 Donut System Integration!`);
+  console.log(`🧪 Potion System Integration!`);
   console.log(`${"★".repeat(60)}\n`);
   
   if (donutManager && typeof donutManager.initialize === 'function') {
@@ -718,5 +687,9 @@ httpServer.listen(PORT, () => {
       tradeManager.initialize(io, BASE44_API_URL, BASE44_SERVICE_KEY, players, getSocketIdByPlayerId);
   } else {
       console.error('❌ Trade Manager Initialize function NOT FOUND!');
+  }
+
+  if (systemRoutes && typeof systemRoutes.initialize === 'function') {
+      systemRoutes.initialize(io, BASE44_SERVICE_KEY, BASE44_API_URL);
   }
 });
