@@ -11,6 +11,7 @@ let serviceKey = null;
 let apiUrl = null;
 
 // Constants
+// No limit on donuts as requested
 const MIN_INTERVAL = 6000;
 const MAX_INTERVAL = 40000;
 
@@ -36,6 +37,7 @@ function getDonutsForArea(areaId) {
 }
 
 function setupSocketHandlers(socket, players) {
+    // 1. Handle Collection
     socket.on('collect_donut', async (data) => {
         const { spawn_id, player_id } = data;
         const player = players.get(socket.id);
@@ -57,13 +59,13 @@ function setupSocketHandlers(socket, players) {
         // REMOVE IMMEDIATELY from memory
         ACTIVE_DONUTS.delete(spawn_id);
 
-        // BROADCAST REMOVAL IMMEDIATELY
+        // BROADCAST REMOVAL IMMEDIATELY to everyone in the area (both logical and specific rooms)
         ioRef.to(donut.area_id).emit('donut_collected', { spawn_id });
         if (donut.area_uuid && donut.area_uuid !== donut.area_id) {
              ioRef.to(donut.area_uuid).emit('donut_collected', { spawn_id });
         }
 
-        // Reward Player
+        // Reward Player (Async - doesn't block game flow) - using player_id from client
         rewardPlayer(player_id || player.playerId, player.username, donut);
     });
 }
@@ -83,20 +85,22 @@ async function tick() {
     if (!ioRef) return;
 
     try {
+        // 1. Fetch ALL Areas to debug active status issue
         const allAreas = await fetchEntities('Area');
         
         if (!allAreas || allAreas.length === 0) {
-            console.log("[DonutManager] No areas found in DB.");
+            console.log("[DonutManager] No areas found in DB at all.");
             return;
         }
 
         const activeAreas = allAreas.filter(a => a.is_active === true);
 
         if (activeAreas.length === 0) {
-            console.log(`[DonutManager] Found ${allAreas.length} areas, but NONE are active.`);
+            console.log(`[DonutManager] Found ${allAreas.length} areas, but NONE are active. Check DB 'is_active' field.`);
             return;
         }
 
+        // 2. Process each active area
         for (const area of activeAreas) {
             await processArea(area);
         }
@@ -106,6 +110,7 @@ async function tick() {
 }
 
 async function processArea(area) {
+    // 1. Parse templates (Check if donut system object exists)
     let templates = [];
     try {
         if (area.decorations) {
@@ -118,18 +123,22 @@ async function processArea(area) {
         console.error(`[DonutManager] Error parsing decorations for ${area.area_id}:`, e.message);
     }
 
+    // User requirement: "only if there is a donut system object"
     if (templates.length === 0) {
         return;
     }
 
+    // 2. Filter and Clean Donuts by version_name
     const validVersionDonuts = [];
     
     for (const [id, d] of ACTIVE_DONUTS.entries()) {
         if (d.area_id === area.area_id) {
+            // User requirement: "pull by version_name"
             if (d.version_name === area.version_name) {
                 validVersionDonuts.push(d);
             } else {
-                console.log(`[DonutManager] Removing mismatched version donut: ${id}`);
+                // Cleanup old version donuts
+                console.log(`[DonutManager] Removing mismatched version donut: ${id} (${d.version_name} != ${area.version_name})`);
                 ACTIVE_DONUTS.delete(id);
                 if (ioRef) {
                     ioRef.to(area.area_id).emit('donut_collected', { spawn_id: id });
@@ -138,37 +147,40 @@ async function processArea(area) {
         }
     }
     
+    // Logic: Limit to 8 donuts per area
     if (validVersionDonuts.length < 8) {
         spawnDonut(area, templates);
     }
 }
 
 function spawnDonut(area, templates) {
+    // 1. Pick Template
     const template = templates[Math.floor(Math.random() * templates.length)];
     
+    // 2. Find Position (Simple Random for now, skipping complex collision for speed unless vital)
+    // Using basic map bounds padding
     const PADDING = 100;
     const x = Math.floor(Math.random() * (1380 - PADDING * 2)) + PADDING;
     const y = Math.floor(Math.random() * (770 - PADDING * 2)) + PADDING;
 
+    // 3. Create Object
     const spawnId = `donut_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
-    
-    // CRITICAL FIX: Trim the name to match client-side expectations
-    const collectibleType = (template.name || 'donut').trim();
-    
     const donut = {
         spawn_id: spawnId,
         area_id: area.area_id,
-        area_uuid: area.id,
+        area_uuid: area.id, // Store UUID for efficient broadcasting
         version_name: area.version_name, 
-        collectible_type: collectibleType,
+        collectible_type: (template.name || 'donut').trim(),
         image_url: template.image_url,
         position_x: x,
         position_y: y,
         scale: template.scale || 1
     };
 
+    // 4. Store in Memory
     ACTIVE_DONUTS.set(spawnId, donut);
 
+    // 5. Broadcast (Wrap in payload to match client expectation)
     const payload = { area_id: area.area_id, spawn: donut };
     
     ioRef.to(area.area_id).emit('donut_spawned', payload);
@@ -177,67 +189,38 @@ function spawnDonut(area, templates) {
         ioRef.to(area.id).emit('donut_spawned', payload);
     }
     
-    console.log(`🍩 Spawned ${collectibleType} in ${area.area_id}: ${spawnId}`);
+    console.log(`🍩 Spawned in ${area.area_id}: ${spawnId}`);
 }
 
 async function rewardPlayer(playerId, username, donut) {
     try {
-        console.log(`[DonutManager] Rewarding ${playerId} (${username}) for ${donut.collectible_type}`);
+        console.log(`[DonutManager] Rewarding user ${playerId} (${username}) for ${donut.collectible_type}`);
         
-        // CRITICAL: Trim and normalize the collectible_type
-        const normalizedType = donut.collectible_type.trim();
+        // Call the backend function that uses service role properly
+        const BASE44_FUNCTION_URL = `${apiUrl}/functions/collectDonut`;
         
-        // Fetch counters with the NORMALIZED type
-        const existingCounters = await fetchEntities('CollectibleCounter', { 
-            user_id: playerId, 
-            collectible_type: normalizedType 
+        const response = await fetch(BASE44_FUNCTION_URL, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${serviceKey}`
+            },
+            body: JSON.stringify({
+                spawn_id: donut.spawn_id,
+                area_id: donut.area_id,
+                player_id: playerId
+            })
         });
         
-        if (existingCounters && existingCounters.length > 0) {
-            const mainRecord = existingCounters[0];
-            let totalQuantity = Number(mainRecord.quantity) || 0;
-
-            // Merge duplicates if they exist
-            if (existingCounters.length > 1) {
-                console.log(`[DonutManager] ⚠️ Found ${existingCounters.length} duplicate rows! Merging...`);
-                
-                for (let i = 1; i < existingCounters.length; i++) {
-                    const dup = existingCounters[i];
-                    totalQuantity += (Number(dup.quantity) || 0);
-                    
-                    deleteEntity('CollectibleCounter', dup.id).catch(err => 
-                        console.error(`[DonutManager] Failed to delete duplicate ${dup.id}`, err)
-                    );
-                }
-            }
-
-            const newQuantity = totalQuantity + 1;
-            console.log(`[DonutManager] Updating counter ${mainRecord.id}: ${totalQuantity} → ${newQuantity}`);
-            
-            await updateEntity('CollectibleCounter', mainRecord.id, {
-                quantity: newQuantity,
-                username: username || mainRecord.username,
-                collectible_type: normalizedType // Ensure it's normalized
-            });
-            
-            console.log(`[DonutManager] ✅ Updated to ${newQuantity}`);
-            
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error(`[DonutManager] Reward failed: ${errorText}`);
         } else {
-            console.log(`[DonutManager] Creating first counter for ${normalizedType}`);
-            
-            await createEntity('CollectibleCounter', {
-                user_id: playerId,
-                username: username || 'Unknown',
-                collectible_type: normalizedType,
-                collectible_name: normalizedType,
-                collectible_image: donut.image_url || '',
-                quantity: 1
-            });
-            
-            console.log(`[DonutManager] ✅ Created first counter`);
+            const result = await response.json();
+            console.log(`[DonutManager] Reward success: ${result.quantity} total`);
         }
     } catch (e) {
-        console.error("[DonutManager] ❌ Reward failed:", e);
+        console.error("[DonutManager] Failed to reward player:", e);
     }
 }
 
@@ -266,12 +249,14 @@ async function fetchEntities(entity, filter = null, queryParam = null) {
         });
         
         if (!res.ok) {
-            console.error(`[DonutManager] Fetch ${entity} failed: ${res.status}`);
+            console.error(`[DonutManager] Fetch ${entity} failed: ${res.status} ${res.statusText}`);
+            const text = await res.text();
+            console.error(`[DonutManager] Response body: ${text}`);
             return [];
         }
         return await res.json();
     } catch (e) {
-        console.error(`[DonutManager] Fetch error:`, e.message);
+        console.error(`[DonutManager] Fetch error for ${entity}:`, e.message);
         return [];
     }
 }
@@ -290,7 +275,7 @@ async function createEntity(entity, data) {
         
         if (!res.ok) {
             const text = await res.text();
-            console.error(`[DonutManager] Create failed: ${text}`);
+            console.error(`[DonutManager] Create ${entity} failed: ${text}`);
             throw new Error(`Create failed: ${res.statusText}`);
         }
         return await res.json();
@@ -314,7 +299,7 @@ async function updateEntity(entity, id, data) {
         
         if (!res.ok) {
             const text = await res.text();
-            console.error(`[DonutManager] Update failed: ${text}`);
+            console.error(`[DonutManager] Update ${entity} failed: ${text}`);
             throw new Error(`Update failed: ${res.statusText}`);
         }
         return await res.json();
@@ -336,7 +321,7 @@ async function deleteEntity(entity, id) {
         });
         
         if (!res.ok) {
-            console.error(`[DonutManager] Delete failed: ${res.status}`);
+            console.error(`[DonutManager] Delete ${entity} failed: ${res.status}`);
         }
     } catch (e) {
         console.error(`[DonutManager] Delete error:`, e);
