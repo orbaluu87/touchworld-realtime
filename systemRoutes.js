@@ -1,20 +1,19 @@
-// functions/server/systemRoutes.js
+// systemRoutes.js - Potion System Handler
 
 module.exports = {
   setupRoutes: function(app, io, players, getSocketIdByPlayerId, BASE44_SERVICE_KEY) {
-    // ---------- System Updates ----------
     app.post("/system/update_player", (req, res) => {
       const authHeader = req.headers.authorization;
       const key = authHeader && authHeader.startsWith("Bearer ") ? authHeader.substring(7) : null;
       
       if (key !== BASE44_SERVICE_KEY) {
-        console.error("❌ /system/update_player: Unauthorized - wrong key");
+        console.error("❌ Unauthorized");
         return res.status(403).json({ error: "Unauthorized" });
       }
 
       const { playerId, data } = req.body;
       if (!playerId || !data) {
-        console.error("❌ /system/update_player: Missing playerId or data");
+        console.error("❌ Missing params");
         return res.status(400).json({ error: "Missing playerId or data" });
       }
 
@@ -22,7 +21,7 @@ module.exports = {
       if (sid) {
         const p = players.get(sid);
         if (p) {
-          // Update local state
+          // Update in-memory
           if (data.active_transformation_image_url !== undefined) p.active_transformation_image_url = data.active_transformation_image_url;
           if (data.active_transformation_settings !== undefined) p.active_transformation_settings = data.active_transformation_settings;
           if (data.active_transformation_expires_at !== undefined) p.active_transformation_expires_at = data.active_transformation_expires_at;
@@ -30,7 +29,7 @@ module.exports = {
           if (data.visual_override_expires_at !== undefined) p.visual_override_expires_at = data.visual_override_expires_at;
           if (data.is_invisible !== undefined) p.is_invisible = data.is_invisible;
           
-          // Broadcast specific update
+          // Broadcast
           io.to(p.current_area).emit("player_update", {
             id: p.playerId,
             playerId: p.playerId,
@@ -38,20 +37,20 @@ module.exports = {
             ...data
           });
           
-          console.log(`🧪 Potion/System Effect on ${p.username}:`, Object.keys(data));
+          console.log(`🧪 Potion applied to ${p.username}`);
           return res.json({ success: true, updated: true });
         }
       }
       
-      return res.json({ success: true, updated: false, message: "Player not connected" });
+      return res.json({ success: true, updated: false, message: "Player offline" });
     });
   },
   
   initialize: function() {
-    console.log('✅ System Routes initialized');
+    console.log('✅ System Routes ready');
   },
   
   setupSocketHandlers: function() {
-    // Reserved for future socket-based potion handling
+    // Future socket handlers
   }
 };
