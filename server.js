@@ -1,5 +1,5 @@
 // ============================================================================
-// Touch World - Socket Server v11.8.0 - PLAYER-ONLY SYSTEM + POTION SYSTEM
+// Touch World - Socket Server v11.8.1 - BANNED WORDS SERVER CHECK
 // ============================================================================
 
 const { createServer } = require("http");
@@ -51,7 +51,7 @@ if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   process.exit(1);
 }
 
-const VERSION = "11.8.0";
+const VERSION = "11.8.1"; // Banned Words Server Check
 
 // ---------- State ----------
 const players = new Map();
@@ -476,13 +476,15 @@ io.on("connection", async (socket) => {
     }, 1000);
   });
 
-  socket.on("chat_message", (data = {}) => {
+  // ========== CHAT_MESSAGE - WITH SERVER-SIDE BANNED WORDS CHECK ==========
+  socket.on("chat_message", async (data = {}) => {
     const p = players.get(socket.id);
     if (!p) return;
 
     const msg = (data.message ?? data.text ?? "").toString().trim();
     if (!msg) return;
 
+    // 🔒 Rate Limiting
     const key = `chat_${p.playerId}`;
     const last = chatRateLimit.get(key) || 0;
     if (now() - last < 1000) {
@@ -491,6 +493,43 @@ io.on("connection", async (socket) => {
     }
     chatRateLimit.set(key, now());
 
+    // 🔒 Banned Words Check on Server!
+    try {
+      const bannedWordsResponse = await fetch(`${BASE44_API_URL}/entities/BannedWord`, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${BASE44_SERVICE_KEY}`,
+        },
+      });
+
+      if (bannedWordsResponse.ok) {
+        const bannedWords = await bannedWordsResponse.json();
+        const bannedWordsList = bannedWords.map(w => w.word.toLowerCase().trim());
+        
+        const messageToCheck = msg.toLowerCase().replace(/\s+/g, '').replace(/[^\u0590-\u05FFa-z0-9]/g, '');
+        
+        let foundBanned = false;
+        for (const bannedWord of bannedWordsList) {
+          const bannedWordNoSpaces = bannedWord.replace(/\s+/g, '').replace(/[^\u0590-\u05FFa-z0-9]/g, '');
+          if (messageToCheck.includes(bannedWordNoSpaces)) {
+            foundBanned = true;
+            console.log(`🚫 BLOCKED by server: "${msg}" contains "${bannedWord}"`);
+            break;
+          }
+        }
+        
+        if (foundBanned) {
+          // ❌ Don't broadcast - message blocked!
+          return;
+        }
+      }
+    } catch (error) {
+      console.error('❌ Error checking banned words:', error);
+      // Continue anyway - don't block all messages if ban check fails
+    }
+
+    // ✅ Message is clean - broadcast it!
     const payload = {
       id: p.playerId,
       playerId: p.playerId,
@@ -671,6 +710,7 @@ httpServer.listen(PORT, () => {
   console.log(`💬 CHAT BUBBLE SYNC enabled!`);
   console.log(`🍩 Donut System Integration!`);
   console.log(`🧪 Potion System Integration!`);
+  console.log(`🚫 Server-Side Banned Words Check!`);
   console.log(`${"★".repeat(60)}\n`);
   
   if (donutManager && typeof donutManager.initialize === 'function') {
