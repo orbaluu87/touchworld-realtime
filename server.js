@@ -1,5 +1,5 @@
 // ============================================================================
-// Touch World - Socket Server v11.8.1 - BANNED WORDS SERVER CHECK
+// Touch World - Socket Server v11.9.0 - TOKEN REFRESH SYSTEM
 // ============================================================================
 
 const { createServer } = require("http");
@@ -51,7 +51,7 @@ if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   process.exit(1);
 }
 
-const VERSION = "11.8.1"; // Banned Words Server Check
+const VERSION = "11.9.0"; // Token Refresh System
 
 // ---------- State ----------
 const players = new Map();
@@ -130,6 +130,11 @@ function normalizePlayerShape(playerData) {
     gems: playerData?.gems || 10,
     active_subscription_tier: playerData?.active_subscription_tier || 'none',
     subscription_expires_at: playerData?.subscription_expires_at,
+    active_transformation_image_url: playerData?.active_transformation_image_url,
+    active_transformation_settings: playerData?.active_transformation_settings,
+    active_transformation_expires_at: playerData?.active_transformation_expires_at,
+    visual_override_data: playerData?.visual_override_data,
+    visual_override_expires_at: playerData?.visual_override_expires_at,
   };
 }
 
@@ -159,6 +164,7 @@ async function verifyTokenWithBase44(token) {
       throw new Error("normalized playerId missing");
     }
 
+    // 🔒 Session validation - prevents token hijacking
     if (result.sessionId && result.player.session_id) {
       if (result.sessionId !== result.player.session_id) {
         throw new Error("Session mismatch - possible token hijacking");
@@ -313,9 +319,10 @@ io.on("connection", async (socket) => {
     return;
   }
 
+  // 🔄 Kick duplicate sessions - כל טוקן חדש מנתק את הישן
   for (const [sid, p] of players.entries()) {
     if (p.playerId === playerData.playerId && sid !== socket.id) {
-      console.log(`⚠️ Kicking duplicate session for ${p.username}`);
+      console.log(`⚠️ Kicking duplicate session for ${p.username} (token refresh)`);
       io.to(sid).emit("disconnect_reason", "logged_in_elsewhere");
       io.sockets.sockets.get(sid)?.disconnect(true);
       players.delete(sid);
@@ -341,6 +348,11 @@ io.on("connection", async (socket) => {
     keep_away_mode: playerData.keep_away_mode ?? false,
     active_subscription_tier: playerData.active_subscription_tier || 'none',
     subscription_expires_at: playerData.subscription_expires_at,
+    active_transformation_image_url: playerData.active_transformation_image_url,
+    active_transformation_settings: playerData.active_transformation_settings,
+    active_transformation_expires_at: playerData.active_transformation_expires_at,
+    visual_override_data: playerData.visual_override_data,
+    visual_override_expires_at: playerData.visual_override_expires_at,
     _lastMoveLogAt: 0,
   };
 
@@ -372,6 +384,55 @@ io.on("connection", async (socket) => {
   if (systemRoutes && typeof systemRoutes.setupSocketHandlers === 'function') {
       systemRoutes.setupSocketHandlers(socket, players);
   }
+
+  // 🔄 TOKEN REFRESH HANDLER - מאפשר רענון טוקן בזמן אמת
+  socket.on("refresh_token", async (data = {}) => {
+    const { newToken } = data;
+    if (!newToken) {
+      socket.emit("token_refresh_failed", { error: "no_token_provided" });
+      return;
+    }
+
+    const newPlayerData = await verifyTokenWithBase44(newToken);
+    if (!newPlayerData) {
+      socket.emit("token_refresh_failed", { error: "invalid_token" });
+      return;
+    }
+
+    // ✅ וידוא שזה אותו שחקן
+    if (newPlayerData.playerId !== player.playerId) {
+      console.error(`⚠️ SECURITY: ${player.username} tried to refresh with different player token!`);
+      socket.emit("token_refresh_failed", { error: "player_mismatch" });
+      socket.disconnect(true);
+      return;
+    }
+
+    // ✅ עדכון נתוני השחקן עם הטוקן החדש
+    Object.assign(player, {
+      equipment: newPlayerData.equipment,
+      active_transformation_image_url: newPlayerData.active_transformation_image_url,
+      active_transformation_settings: newPlayerData.active_transformation_settings,
+      active_transformation_expires_at: newPlayerData.active_transformation_expires_at,
+      visual_override_data: newPlayerData.visual_override_data,
+      visual_override_expires_at: newPlayerData.visual_override_expires_at,
+      active_subscription_tier: newPlayerData.active_subscription_tier,
+      subscription_expires_at: newPlayerData.subscription_expires_at,
+    });
+
+    console.log(`🔄 Token refreshed for ${player.username}`);
+    socket.emit("token_refresh_ok", { success: true });
+    
+    // 📡 שידור עדכון לשאר השחקנים באזור
+    io.to(player.current_area).emit("player_update", {
+      id: player.playerId,
+      playerId: player.playerId,
+      socketId: player.socketId,
+      equipment: player.equipment,
+      active_transformation_image_url: player.active_transformation_image_url,
+      active_transformation_settings: player.active_transformation_settings,
+      visual_override_data: player.visual_override_data,
+    });
+  });
 
   socket.on("move_to", (data = {}) => {
     const p = players.get(socket.id);
@@ -520,13 +581,11 @@ io.on("connection", async (socket) => {
         }
         
         if (foundBanned) {
-          // ❌ Don't broadcast - message blocked!
           return;
         }
       }
     } catch (error) {
       console.error('❌ Error checking banned words:', error);
-      // Continue anyway - don't block all messages if ban check fails
     }
 
     // ✅ Message is clean - broadcast it!
@@ -703,6 +762,7 @@ httpServer.listen(PORT, () => {
   console.log(`🚀 Touch World Server v${VERSION} - Port ${PORT}`);
   console.log(`✅ PLAYER-ONLY SYSTEM - NO BASE44 USERS!`);
   console.log(`✅ CUSTOM JWT AUTHENTICATION!`);
+  console.log(`🔄 TOKEN REFRESH SYSTEM - LIVE TOKEN UPDATES!`);
   console.log(`✅ TRADE SYSTEM with EQUIPMENT REMOVAL + DB UPDATE!`);
   console.log(`✅ ADMIN MODERATION enabled!`);
   console.log(`👻 STEALTH MODE enabled!`);
