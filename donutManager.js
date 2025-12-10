@@ -56,13 +56,38 @@ async function tick() {
     if (!ioRef) return;
 
     const allAreas = await fetchEntities('Area');
-    if (!allAreas || allAreas.length === 0) return;
+    if (!allAreas || allAreas.length === 0) {
+        console.log("[DonutManager] ⚠️ No areas found");
+        return;
+    }
 
-    const activeAreas = allAreas.filter(a => a.is_active === true);
-    console.log(`[DonutManager] 📊 Total: ${allAreas.length}, Active: ${activeAreas.length}`);
+    // 🔥 קיבוץ לפי area_id ובחירת הגרסה הפעילה
+    const areaGroups = new Map();
+    for (const area of allAreas) {
+        const areaId = area.area_id;
+        if (!areaGroups.has(areaId)) {
+            areaGroups.set(areaId, []);
+        }
+        areaGroups.get(areaId).push(area);
+    }
+
+    const activeAreas = [];
+    for (const [areaId, versions] of areaGroups.entries()) {
+        const activeVersion = versions.find(v => v.is_active === true);
+        if (activeVersion) {
+            activeAreas.push(activeVersion);
+        }
+    }
+
+    console.log(`[DonutManager] 📊 Total: ${allAreas.length}, Unique areas: ${areaGroups.size}, Active: ${activeAreas.length}`);
 
     if (activeAreas.length === 0) {
-        console.log(`⚠️ Sample:`, allAreas.slice(0, 3).map(a => ({ area_id: a.area_id, is_active: a.is_active })));
+        console.log(`[DonutManager] ⚠️ No active areas. Sample:`, 
+            Array.from(areaGroups.entries()).slice(0, 3).map(([id, versions]) => ({
+                area_id: id,
+                versions: versions.map(v => ({ version: v.version_name, active: v.is_active }))
+            }))
+        );
         return;
     }
 
@@ -80,9 +105,16 @@ async function processArea(area) {
                 templates = decos.filter(d => d.action_type === 'donut_system');
             }
         }
-    } catch (e) {}
+    } catch (e) {
+        console.error(`[DonutManager] ❌ Parse decorations error for ${area.area_id}:`, e.message);
+    }
 
-    if (templates.length === 0) return;
+    if (templates.length === 0) {
+        console.log(`[DonutManager] ⏭️ Skipping ${area.area_id} - no donut_system decorations`);
+        return;
+    }
+
+    console.log(`[DonutManager] ✅ Found ${templates.length} donut templates in ${area.area_id}`);
 
     const validVersionDonuts = [];
     for (const [id, d] of ACTIVE_DONUTS.entries()) {
@@ -90,11 +122,14 @@ async function processArea(area) {
             if (d.version_name === area.version_name) {
                 validVersionDonuts.push(d);
             } else {
+                console.log(`[DonutManager] 🧹 Cleaning old version donut: ${id}`);
                 ACTIVE_DONUTS.delete(id);
                 ioRef.to(area.area_id).emit('donut_collected', { spawn_id: id });
             }
         }
     }
+    
+    console.log(`[DonutManager] 🍩 ${area.area_id}: ${validVersionDonuts.length}/8 donuts active`);
     
     if (validVersionDonuts.length < 8) {
         spawnDonut(area, templates);
@@ -126,10 +161,9 @@ function spawnDonut(area, templates) {
     ioRef.to(area.area_id).emit('donut_spawned', payload);
     if (area.id !== area.area_id) ioRef.to(area.id).emit('donut_spawned', payload);
     
-    console.log(`🍩 Spawned "${donut.collectible_type}" in ${area.area_id}`);
+    console.log(`🍩 Spawned "${donut.collectible_type}" in ${area.area_id} (${area.version_name})`);
 }
 
-// 🔑 השינוי המרכזי - שימוש ישיר ב-API במקום קריאה ל-function
 async function rewardPlayer(playerId, username, donut) {
     try {
         console.log(`[DonutManager] 🎁 Rewarding ${username} for ${donut.collectible_type}`);
