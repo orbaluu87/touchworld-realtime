@@ -116,24 +116,23 @@ async function processArea(area) {
 
     console.log(`[DonutManager] ✅ Found ${templates.length} donut templates in ${area.area_id}`);
 
-    const validVersionDonuts = [];
+    // 🧹 ניקוי סופגניות מגרסאות ישנות
     for (const [id, d] of ACTIVE_DONUTS.entries()) {
-        if (d.area_id === area.area_id) {
-            if (d.version_name === area.version_name) {
-                validVersionDonuts.push(d);
-            } else {
-                console.log(`[DonutManager] 🧹 Cleaning old version donut: ${id}`);
-                ACTIVE_DONUTS.delete(id);
-                ioRef.to(area.area_id).emit('donut_collected', { spawn_id: id });
-            }
+        if (d.area_id === area.area_id && d.version_name !== area.version_name) {
+            console.log(`[DonutManager] 🧹 Cleaning old version donut: ${id}`);
+            ACTIVE_DONUTS.delete(id);
+            ioRef.to(area.area_id).emit('donut_collected', { spawn_id: id });
         }
     }
     
-    console.log(`[DonutManager] 🍩 ${area.area_id}: ${validVersionDonuts.length}/8 donuts active`);
+    const currentCount = Array.from(ACTIVE_DONUTS.values())
+        .filter(d => d.area_id === area.area_id && d.version_name === area.version_name)
+        .length;
     
-    if (validVersionDonuts.length < 8) {
-        spawnDonut(area, templates);
-    }
+    console.log(`[DonutManager] 🍩 ${area.area_id}: ${currentCount} donuts active - spawning new one`);
+    
+    // ✅ תמיד צור סופגניה חדשה, ללא הגבלה!
+    spawnDonut(area, templates);
 }
 
 function spawnDonut(area, templates) {
