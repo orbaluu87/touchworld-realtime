@@ -272,7 +272,7 @@ module.exports = {
 
   setupSocketHandlers: (socket) => {
     // ========== TRADE REQUEST ==========
-    socket.on("trade_request", async (data = {}) => {
+    socket.on("trade_request", (data = {}) => {
       const initiator = players.get(socket.id);
       if (!initiator) return;
 
@@ -285,41 +285,32 @@ module.exports = {
       const receiver = players.get(recvSid);
       if (!receiver) return;
 
-      // 🔒 בדיקה אם אחד השחקנים חסום מהחלפות
-      try {
-        const [initiatorPlayer] = await fetch(`${BASE44_API_URL}/entities/Player?filter=${encodeURIComponent(JSON.stringify({ id: initiator.playerId }))}`, {
-          method: "GET",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${BASE44_SERVICE_KEY}`,
-          },
-        }).then(r => r.json());
-
-        const [receiverPlayer] = await fetch(`${BASE44_API_URL}/entities/Player?filter=${encodeURIComponent(JSON.stringify({ id: receiverId }))}`, {
-          method: "GET",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${BASE44_SERVICE_KEY}`,
-          },
-        }).then(r => r.json());
-
-        if (initiatorPlayer?.trade_banned) {
-          io.to(socket.id).emit("trade_error", {
-            message: "אתה חסום לצמיתות מביצוע החלפות."
+      // ✅ בדיקה אם המקבל כבר בהחלפה
+      for (const [existingTradeId, existingTrade] of activeTrades.entries()) {
+        if ((existingTrade.initiatorId === receiverId || existingTrade.receiverId === receiverId) &&
+            existingTrade.status !== 'cancelled' && existingTrade.status !== 'failed') {
+          // המקבל עסוק
+          io.to(socket.id).emit("trade_request_failed", {
+            reason: "player_busy",
+            message: `${receiver.username} עסוק בהחלפה אחרת כרגע`
           });
-          console.log(`🚫 ${initiator.username} is trade banned, cannot initiate trade`);
+          console.log(`⚠️ Trade Request blocked: ${receiver.username} is already in a trade`);
           return;
         }
+      }
 
-        if (receiverPlayer?.trade_banned) {
-          io.to(socket.id).emit("trade_error", {
-            message: `${receiver.username} חסום לצמיתות מביצוע החלפות.`
+      // ✅ בדיקה אם השולח עצמו כבר בהחלפה
+      for (const [existingTradeId, existingTrade] of activeTrades.entries()) {
+        if ((existingTrade.initiatorId === initiator.playerId || existingTrade.receiverId === initiator.playerId) &&
+            existingTrade.status !== 'cancelled' && existingTrade.status !== 'failed') {
+          // השולח עסוק
+          io.to(socket.id).emit("trade_request_failed", {
+            reason: "you_are_busy",
+            message: "אתה כבר בהחלפה פעילה"
           });
-          console.log(`🚫 ${receiver.username} is trade banned, cannot receive trade`);
+          console.log(`⚠️ Trade Request blocked: ${initiator.username} is already in a trade`);
           return;
         }
-      } catch (error) {
-        console.error("Error checking trade ban status:", error);
       }
 
       const tradeId = `trade_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
@@ -341,12 +332,22 @@ module.exports = {
 
       console.log(`🔄 Trade Request: ${initiator.username} → ${receiver.username} (${tradeId})`);
 
+      // שליחה למקבל
       io.to(recvSid).emit("trade_request_received", {
         trade_id: tradeId,
         initiator: {
           id: initiator.playerId,
           username: initiator.username,
           equipment: initiator.equipment,
+        },
+      });
+
+      // שליחה לשולח (אישור ששלח)
+      io.to(socket.id).emit("trade_request_sent", {
+        trade_id: tradeId,
+        receiver: {
+          id: receiver.playerId,
+          username: receiver.username,
         },
       });
     });
@@ -587,42 +588,4 @@ module.exports = {
       activeTrades.delete(data.trade_id);
     });
 
-    // ========== TRADE CHAT ==========
-    socket.on("trade_chat", (data = {}) => {
-      const p = players.get(socket.id);
-      if (!p) {
-          console.log("❌ Trade Chat: Player not found");
-          return;
-      }
-
-      const trade = activeTrades.get(data.trade_id);
-      if (!trade) {
-          console.log("❌ Trade Chat: Trade not found", data.trade_id);
-          return;
-      }
-
-      // Verify participant
-      if (trade.initiatorId !== p.playerId && trade.receiverId !== p.playerId) {
-          console.log("❌ Trade Chat: Not a participant");
-          return;
-      }
-
-      const message = (data.message || "").toString().trim().slice(0, 100);
-      if (!message) return;
-
-      console.log(`💬 Trade Chat [${trade.id}]: ${p.username}: "${message}"`);
-
-      const chatPayload = {
-        trade_id: trade.id,
-        sender_id: p.playerId,
-        sender_name: p.username,
-        message: message,
-        timestamp: Date.now()
-      };
-
-      // Broadcast to trade room
-      io.to(`trade_${trade.id}`).emit("trade_chat_message", chatPayload);
-      console.log(`✅ Broadcast to trade room: trade_${trade.id}`);
-    });
-  }
-};
+  
