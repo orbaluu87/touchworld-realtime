@@ -1,5 +1,5 @@
 // ============================================================================
-// Touch World - Socket Server v11.9.2 - ZOMBIE KILLER UPDATE
+// Touch World - Socket Server v11.9.3 - TOKEN FLOOD FIX
 // ============================================================================
 
 const { createServer } = require("http");
@@ -7,7 +7,6 @@ const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
 const { Server } = require("socket.io");
-// const fetch = require("node-fetch"); // Built-in in Node 18+ / Deno
 const donutManager = require("./donutManager");
 const tradeManager = require("./tradeManager");
 const systemRoutes = require("./systemRoutes");
@@ -57,11 +56,12 @@ if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   console.error("❌ Missing security keys");
 }
 
-const VERSION = "11.9.2"; // Zombie Killer Update
+const VERSION = "11.9.3"; // Token Flood Fix
 
 // ---------- State ----------
 const players = new Map();
 const chatRateLimit = new Map();
+const tokenRefreshRateLimit = new Map(); // ✅ Rate limiting לרענון טוכנים
 
 const KEEP_AWAY_RADIUS = 200;
 
@@ -157,6 +157,10 @@ async function verifyTokenWithBase44(token) {
 
     if (!response.ok) {
       const txt = await response.text();
+      // ✅ לא להדפיס שגיאות טוכן - זה מציף את הלוגים
+      if (response.status === 401) {
+        return null; // Token expired - שקט
+      }
       throw new Error(`HTTP ${response.status}: ${txt}`);
     }
 
@@ -170,7 +174,6 @@ async function verifyTokenWithBase44(token) {
       throw new Error("normalized playerId missing");
     }
 
-    // 🔒 Session validation
     if (result.sessionId && result.player.session_id) {
       if (result.sessionId !== result.player.session_id) {
         throw new Error("Session mismatch - possible token hijacking");
@@ -181,7 +184,7 @@ async function verifyTokenWithBase44(token) {
     
     return normalized;
   } catch (err) {
-    console.error("❌ Token Error:", err.message);
+    // ✅ לא להדפיס שגיאות טוכן - מציף לוגים
     return null;
   }
 }
@@ -328,11 +331,8 @@ io.on("connection", async (socket) => {
     if (p.playerId === playerData.playerId && sid !== socket.id) {
       console.log(`⚠️ Kicking duplicate session for ${p.username}`);
       
-      // 1. קודם שולחים הודעה שהקליינט ידע למה הוא מתנתק
       io.to(sid).emit("disconnect_reason", "logged_in_elsewhere");
       
-      // 2. משהים את הניתוק ב-500ms כדי לוודא שההודעה הגיעה
-      // והקליינט הישן הפסיק את ניסיונות ההתחברות האוטומטיים
       setTimeout(() => {
           console.log(`🔌 Killing old socket ${sid} for ${p.username}`);
           io.sockets.sockets.get(sid)?.disconnect(true);
@@ -367,6 +367,7 @@ io.on("connection", async (socket) => {
     visual_override_data: playerData.visual_override_data,
     visual_override_expires_at: playerData.visual_override_expires_at,
     _lastMoveLogAt: 0,
+    _tokenRefreshFailures: 0, // ✅ מונה כשלונות רענון טוכן
     connectedAt: Date.now(),
   };
 
@@ -398,16 +399,44 @@ io.on("connection", async (socket) => {
       systemRoutes.setupSocketHandlers(socket, players);
   }
 
-  // 🔄 Refresh Token
+  // 🔄 Refresh Token - עם Rate Limiting!
   socket.on("refresh_token", async (data = {}) => {
     const { newToken } = data;
-    if (!newToken) return socket.emit("token_refresh_failed", { error: "no_token" });
+    if (!newToken) {
+      socket.emit("token_refresh_failed", { error: "no_token" });
+      return;
+    }
+
+    // ✅ Rate Limiting - מקסימום 1 רענון ל-5 שניות
+    const rateLimitKey = `refresh_${socket.id}`;
+    const lastRefresh = tokenRefreshRateLimit.get(rateLimitKey) || 0;
+    
+    if (now() - lastRefresh < 5000) {
+      console.log(`⚠️ Rate limit: ${player.username} trying to refresh token too fast`);
+      return; // שקט - לא משיבים כלום
+    }
+    
+    tokenRefreshRateLimit.set(rateLimitKey, now());
 
     const newPlayerData = await verifyTokenWithBase44(newToken);
+    
     if (!newPlayerData || newPlayerData.playerId !== player.playerId) {
+      // ✅ אחרי 3 כשלונות - נתק!
+      player._tokenRefreshFailures = (player._tokenRefreshFailures || 0) + 1;
+      
+      if (player._tokenRefreshFailures >= 3) {
+        console.log(`🚫 Disconnecting ${player.username} - too many token refresh failures`);
+        socket.emit("disconnect_reason", "token_expired");
+        socket.disconnect(true);
+        return;
+      }
+      
       socket.emit("token_refresh_failed", { error: "invalid" });
       return;
     }
+
+    // ✅ הצלחה - אפס מונה כשלונות
+    player._tokenRefreshFailures = 0;
 
     Object.assign(player, {
       equipment: newPlayerData.equipment,
@@ -534,7 +563,7 @@ io.on("connection", async (socket) => {
         const msgCheck = msg.toLowerCase().replace(/\s+/g, '').replace(/[^\u0590-\u05FFa-z0-9]/g, '');
         for (const w of bannedWords) {
           const wCheck = w.word.toLowerCase().replace(/\s+/g, '').replace(/[^\u0590-\u05FFa-z0-9]/g, '');
-          if (msgCheck.includes(wCheck)) return; // Banned
+          if (msgCheck.includes(wCheck)) return;
         }
       }
     } catch (error) {}
@@ -606,6 +635,10 @@ io.on("connection", async (socket) => {
         console.log(`🔴 Disconnect: ${p.username} | ${reason}`);
         socket.to(p.current_area).emit("player_disconnected", p.playerId);
         if (tradeManager?.handleDisconnect) tradeManager.handleDisconnect(socket.id);
+        
+        // ✅ ניקוי rate limit
+        tokenRefreshRateLimit.delete(`refresh_${socket.id}`);
+        
         players.delete(socket.id);
     }
   });
@@ -634,7 +667,6 @@ setInterval(() => {
         player.position_y += (dy / distance) * speed;
       }
 
-      // Check Keep Away for non-admins
       if (player.admin_level === 'user') {
           const areaAdmins = Array.from(players.values()).filter(p => 
               p.current_area === player.current_area && p.admin_level === 'admin' && p.keep_away_mode
@@ -670,10 +702,20 @@ setInterval(() => {
   }
 }, 50);
 
+// ✅ ניקוי rate limits ישנים כל דקה
+setInterval(() => {
+  const cutoff = now() - 60000; // מעל דקה
+  for (const [key, timestamp] of tokenRefreshRateLimit.entries()) {
+    if (timestamp < cutoff) {
+      tokenRefreshRateLimit.delete(key);
+    }
+  }
+}, 60000);
+
 // ---------- Start ----------
 httpServer.listen(PORT, () => {
   console.log(`🚀 Touch World Server v${VERSION} - Port ${PORT}`);
-  console.log(`🧟 ZOMBIE KILLER ACTIVATED (500ms delay)`);
+  console.log(`🛡️ TOKEN FLOOD PROTECTION ENABLED`);
   
   if (donutManager?.initialize) donutManager.initialize(io, BASE44_SERVICE_KEY, BASE44_API_URL);
   if (tradeManager?.initialize) tradeManager.initialize(io, BASE44_API_URL, BASE44_SERVICE_KEY, players, getSocketIdByPlayerId);
