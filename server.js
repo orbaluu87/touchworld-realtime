@@ -48,7 +48,7 @@ const HEALTH_KEY = process.env.HEALTH_KEY || "secret-health";
 
 if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   console.error("❌ Missing security keys");
-  process.exit(1);
+  // process.exit(1); // Optional: keep running to see logs
 }
 
 const VERSION = "11.9.0"; // Token Refresh System
@@ -324,7 +324,8 @@ io.on("connection", async (socket) => {
     if (p.playerId === playerData.playerId && sid !== socket.id) {
       console.log(`⚠️ Kicking duplicate session for ${p.username} (token refresh)`);
       io.to(sid).emit("disconnect_reason", "logged_in_elsewhere");
-      io.sockets.sockets.get(sid)?.disconnect(true);
+      // מאפשרים ניתוק "רך" כדי שההודעה תגיע
+      io.sockets.sockets.get(sid)?.disconnect(); 
       players.delete(sid);
     }
   }
