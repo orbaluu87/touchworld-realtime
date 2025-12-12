@@ -1,5 +1,5 @@
 // ============================================================================
-// Touch World - Socket Server v11.9.3 - TOKEN FLOOD FIX
+// Touch World - Socket Server v11.9.3 - TOKEN FLOOD FIX + SUBSCRIPTION FIX
 // ============================================================================
 
 const { createServer } = require("http");
@@ -56,12 +56,12 @@ if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   console.error("❌ Missing security keys");
 }
 
-const VERSION = "11.9.3"; // Token Flood Fix
+const VERSION = "11.9.4"; // Subscription Fix
 
 // ---------- State ----------
 const players = new Map();
 const chatRateLimit = new Map();
-const tokenRefreshRateLimit = new Map(); // ✅ Rate limiting לרענון טוכנים
+const tokenRefreshRateLimit = new Map();
 
 const KEEP_AWAY_RADIUS = 200;
 
@@ -73,6 +73,7 @@ function safePlayerView(p) {
   return {
     id: p.playerId,
     playerId: p.playerId,
+    user_id: p.user_id,
     socketId: p.socketId,
     username: p.username,
     current_area: p.current_area,
@@ -107,6 +108,7 @@ function normalizePlayerShape(playerData) {
 
   return {
     playerId,
+    user_id: playerData?.user_id || playerId,
     username: playerData?.username ?? "Guest",
     display_name: playerData?.display_name,
     current_area: playerData?.current_area ?? "betach",
@@ -157,9 +159,8 @@ async function verifyTokenWithBase44(token) {
 
     if (!response.ok) {
       const txt = await response.text();
-      // ✅ לא להדפיס שגיאות טוכן - זה מציף את הלוגים
       if (response.status === 401) {
-        return null; // Token expired - שקט
+        return null;
       }
       throw new Error(`HTTP ${response.status}: ${txt}`);
     }
@@ -184,7 +185,6 @@ async function verifyTokenWithBase44(token) {
     
     return normalized;
   } catch (err) {
-    // ✅ לא להדפיס שגיאות טוכן - מציף לוגים
     return null;
   }
 }
@@ -345,6 +345,7 @@ io.on("connection", async (socket) => {
   const player = {
     socketId: socket.id,
     playerId: playerData.playerId,
+    user_id: playerData.user_id || playerData.playerId,
     username: playerData.username,
     display_name: playerData.display_name,
     admin_level: playerData.admin_level,
@@ -367,7 +368,7 @@ io.on("connection", async (socket) => {
     visual_override_data: playerData.visual_override_data,
     visual_override_expires_at: playerData.visual_override_expires_at,
     _lastMoveLogAt: 0,
-    _tokenRefreshFailures: 0, // ✅ מונה כשלונות רענון טוכן
+    _tokenRefreshFailures: 0,
     connectedAt: Date.now(),
   };
 
@@ -407,13 +408,11 @@ io.on("connection", async (socket) => {
       return;
     }
 
-    // ✅ Rate Limiting - מקסימום 1 רענון ל-5 שניות
     const rateLimitKey = `refresh_${socket.id}`;
     const lastRefresh = tokenRefreshRateLimit.get(rateLimitKey) || 0;
     
     if (now() - lastRefresh < 5000) {
-      console.log(`⚠️ Rate limit: ${player.username} trying to refresh token too fast`);
-      return; // שקט - לא משיבים כלום
+      return;
     }
     
     tokenRefreshRateLimit.set(rateLimitKey, now());
@@ -421,7 +420,6 @@ io.on("connection", async (socket) => {
     const newPlayerData = await verifyTokenWithBase44(newToken);
     
     if (!newPlayerData || newPlayerData.playerId !== player.playerId) {
-      // ✅ אחרי 3 כשלונות - נתק!
       player._tokenRefreshFailures = (player._tokenRefreshFailures || 0) + 1;
       
       if (player._tokenRefreshFailures >= 3) {
@@ -435,10 +433,10 @@ io.on("connection", async (socket) => {
       return;
     }
 
-    // ✅ הצלחה - אפס מונה כשלונות
     player._tokenRefreshFailures = 0;
 
     Object.assign(player, {
+      user_id: newPlayerData.user_id || player.user_id,
       equipment: newPlayerData.equipment,
       active_transformation_image_url: newPlayerData.active_transformation_image_url,
       active_transformation_settings: newPlayerData.active_transformation_settings,
@@ -459,6 +457,8 @@ io.on("connection", async (socket) => {
       active_transformation_image_url: player.active_transformation_image_url,
       active_transformation_settings: player.active_transformation_settings,
       visual_override_data: player.visual_override_data,
+      active_subscription_tier: player.active_subscription_tier,
+      subscription_expires_at: player.subscription_expires_at,
     });
   });
 
@@ -636,7 +636,6 @@ io.on("connection", async (socket) => {
         socket.to(p.current_area).emit("player_disconnected", p.playerId);
         if (tradeManager?.handleDisconnect) tradeManager.handleDisconnect(socket.id);
         
-        // ✅ ניקוי rate limit
         tokenRefreshRateLimit.delete(`refresh_${socket.id}`);
         
         players.delete(socket.id);
@@ -704,7 +703,7 @@ setInterval(() => {
 
 // ✅ ניקוי rate limits ישנים כל דקה
 setInterval(() => {
-  const cutoff = now() - 60000; // מעל דקה
+  const cutoff = now() - 60000;
   for (const [key, timestamp] of tokenRefreshRateLimit.entries()) {
     if (timestamp < cutoff) {
       tokenRefreshRateLimit.delete(key);
@@ -716,6 +715,7 @@ setInterval(() => {
 httpServer.listen(PORT, () => {
   console.log(`🚀 Touch World Server v${VERSION} - Port ${PORT}`);
   console.log(`🛡️ TOKEN FLOOD PROTECTION ENABLED`);
+  console.log(`✅ SUBSCRIPTION DATA SYNC ENABLED`);
   
   if (donutManager?.initialize) donutManager.initialize(io, BASE44_SERVICE_KEY, BASE44_API_URL);
   if (tradeManager?.initialize) tradeManager.initialize(io, BASE44_API_URL, BASE44_SERVICE_KEY, players, getSocketIdByPlayerId);
