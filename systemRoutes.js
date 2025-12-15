@@ -2,6 +2,24 @@
 
 module.exports = {
   setupRoutes: function(app, io, players, getSocketIdByPlayerId, BASE44_SERVICE_KEY) {
+    // ✅ Endpoint to fetch online players
+    app.get("/system/online_players", (req, res) => {
+      const authHeader = req.headers.authorization;
+      const key = authHeader && authHeader.startsWith("Bearer ") ? authHeader.substring(7) : null;
+      
+      if (key !== BASE44_SERVICE_KEY) {
+        return res.status(403).json({ error: "Unauthorized" });
+      }
+
+      const onlinePlayers = Array.from(players.values()).map(p => ({
+        id: p.playerId,
+        username: p.username,
+        area: p.current_area,
+      }));
+
+      return res.json({ success: true, players: onlinePlayers });
+    });
+
     app.post("/system/update_player", (req, res) => {
       const authHeader = req.headers.authorization;
       const key = authHeader && authHeader.startsWith("Bearer ") ? authHeader.substring(7) : null;
