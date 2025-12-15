@@ -271,7 +271,7 @@ module.exports = {
 
   setupSocketHandlers: (socket) => {
     // ========== TRADE REQUEST ==========
-    socket.on("trade_request", (data = {}) => {
+    socket.on("trade_request", async (data = {}) => {
       const initiator = players.get(socket.id);
       if (!initiator) return;
 
@@ -283,6 +283,31 @@ module.exports = {
 
       const receiver = players.get(recvSid);
       if (!receiver) return;
+
+      // ✅ בדיקה אם המקבל חסם החלפות
+      try {
+        const receiverDataResponse = await fetch(`${BASE44_API_URL}/entities/Player/${receiverId}`, {
+          method: "GET",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${BASE44_SERVICE_KEY}`,
+          },
+        });
+
+        if (receiverDataResponse.ok) {
+          const receiverData = await receiverDataResponse.json();
+          if (receiverData.trades_blocked === true) {
+            io.to(socket.id).emit("trade_request_failed", {
+              reason: "trades_blocked",
+              message: `${receiver.username} חסם בקשות החלפה`
+            });
+            console.log(`⚠️ Trade Request blocked: ${receiver.username} has trades_blocked enabled`);
+            return;
+          }
+        }
+      } catch (error) {
+        console.error("Error checking trades_blocked:", error);
+      }
 
       // ✅ בדיקה אם המקבל כבר בהחלפה
       for (const [existingTradeId, existingTrade] of activeTrades.entries()) {
@@ -339,7 +364,7 @@ module.exports = {
         },
       });
 
-      // ✅ שליחה לשולח (אישור ששלח)
+      // שליחה לשולח (אישור ששלח)
       io.to(socket.id).emit("trade_request_sent", {
         trade_id: tradeId,
         receiver: {
