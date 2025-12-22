@@ -1,5 +1,5 @@
 // ============================================================================
-// Touch World - Socket Server v11.9.3 - TOKEN FLOOD FIX + SUBSCRIPTION FIX
+// Touch World - Socket Server v11.9.0 - TOKEN REFRESH SYSTEM
 // ============================================================================
 
 const { createServer } = require("http");
@@ -7,6 +7,7 @@ const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
 const { Server } = require("socket.io");
+const fetch = require("node-fetch");
 const donutManager = require("./donutManager");
 const tradeManager = require("./tradeManager");
 const systemRoutes = require("./systemRoutes");
@@ -16,15 +17,8 @@ const app = express();
 app.use(express.json());
 app.use(helmet());
 
-// ---------- Environment Helper ----------
-const getEnv = (key) => {
-  if (typeof process !== "undefined" && process.env) return process.env[key];
-  if (typeof Deno !== "undefined") return Deno.env.get(key);
-  return undefined;
-};
-
 // ---------- CORS ----------
-const allowedOrigins = (getEnv("ALLOWED_ORIGINS") || "")
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || "")
   .split(",")
   .map(s => s.trim())
   .filter(Boolean);
@@ -39,29 +33,29 @@ app.use(
 
 // ---------- Server ----------
 const httpServer = createServer(app);
-const PORT = getEnv("PORT") || 10000;
+const PORT = process.env.PORT || 10000;
 
 // ---------- Env / Security ----------
-const JWT_SECRET = getEnv("JWT_SECRET");
+const JWT_SECRET = process.env.JWT_SECRET;
 const VERIFY_TOKEN_URL =
-  getEnv("VERIFY_TOKEN_URL") ||
+  process.env.VERIFY_TOKEN_URL ||
   "https://base44.app/api/apps/68e269394d8f2fa24e82cd71/functions/verifyWebSocketToken";
-const BASE44_SERVICE_KEY = getEnv("BASE44_SERVICE_KEY");
+const BASE44_SERVICE_KEY = process.env.BASE44_SERVICE_KEY;
 const BASE44_API_URL =
-  getEnv("BASE44_API_URL") ||
+  process.env.BASE44_API_URL ||
   "https://base44.app/api/apps/68e269394d8f2fa24e82cd71";
-const HEALTH_KEY = getEnv("HEALTH_KEY") || "secret-health";
+const HEALTH_KEY = process.env.HEALTH_KEY || "secret-health";
 
 if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   console.error("❌ Missing security keys");
+  throw new Error("Missing security keys");
 }
 
-const VERSION = "11.9.4"; // Subscription Fix
+const VERSION = "11.9.0"; // Token Refresh System
 
 // ---------- State ----------
 const players = new Map();
 const chatRateLimit = new Map();
-const tokenRefreshRateLimit = new Map();
 
 const KEEP_AWAY_RADIUS = 200;
 
@@ -159,9 +153,6 @@ async function verifyTokenWithBase44(token) {
 
     if (!response.ok) {
       const txt = await response.text();
-      if (response.status === 401) {
-        return null;
-      }
       throw new Error(`HTTP ${response.status}: ${txt}`);
     }
 
@@ -175,6 +166,7 @@ async function verifyTokenWithBase44(token) {
       throw new Error("normalized playerId missing");
     }
 
+    // 🔒 Session validation - prevents token hijacking
     if (result.sessionId && result.player.session_id) {
       if (result.sessionId !== result.player.session_id) {
         throw new Error("Session mismatch - possible token hijacking");
@@ -185,6 +177,7 @@ async function verifyTokenWithBase44(token) {
     
     return normalized;
   } catch (err) {
+    console.error("❌ Token Error:", err.message);
     return null;
   }
 }
@@ -251,6 +244,8 @@ function pushAwayNearbyPlayers(adminPlayer, areaId, io) {
         direction: player.direction,
         animation_frame: "idle",
       });
+
+      console.log(`🚫 Pushed ${player.username} away from admin ${adminPlayer.username}`);
     }
   }
 
@@ -306,7 +301,7 @@ app.post("/broadcast-config", (req, res) => {
   res.json({ ok: true, broadcasted: true });
 });
 
-// ========== SYSTEM ROUTES SETUP ==========
+// ========== SYSTEM ROUTES SETUP (POTION SYSTEM) ==========
 systemRoutes.setupRoutes(app, io, players, getSocketIdByPlayerId, BASE44_SERVICE_KEY);
 console.log('✅ System Routes (Potion System) initialized');
 
@@ -326,18 +321,12 @@ io.on("connection", async (socket) => {
     return;
   }
 
-  // 🔄 KICK DUPLICATE SESSIONS - DELAYED!
+  // 🔄 Kick duplicate sessions - כל טוקן חדש מנתק את הישן
   for (const [sid, p] of players.entries()) {
     if (p.playerId === playerData.playerId && sid !== socket.id) {
-      console.log(`⚠️ Kicking duplicate session for ${p.username}`);
-      
+      console.log(`⚠️ Kicking duplicate session for ${p.username} (token refresh)`);
       io.to(sid).emit("disconnect_reason", "logged_in_elsewhere");
-      
-      setTimeout(() => {
-          console.log(`🔌 Killing old socket ${sid} for ${p.username}`);
-          io.sockets.sockets.get(sid)?.disconnect(true);
-      }, 500); 
-      
+      io.sockets.sockets.get(sid)?.disconnect(); // ✅ UPDATED: allow message to be sent
       players.delete(sid);
     }
   }
@@ -368,8 +357,6 @@ io.on("connection", async (socket) => {
     visual_override_data: playerData.visual_override_data,
     visual_override_expires_at: playerData.visual_override_expires_at,
     _lastMoveLogAt: 0,
-    _tokenRefreshFailures: 0,
-    connectedAt: Date.now(),
   };
 
   players.set(socket.id, player);
@@ -389,54 +376,42 @@ io.on("connection", async (socket) => {
 
   console.log(`🟢 Connected: ${player.username} (${player.current_area})`);
 
-  // Setup Handlers
   if (donutManager && typeof donutManager.setupSocketHandlers === 'function') {
       donutManager.setupSocketHandlers(socket, players);
   }
+
   if (tradeManager && typeof tradeManager.setupSocketHandlers === 'function') {
       tradeManager.setupSocketHandlers(socket);
   }
+
   if (systemRoutes && typeof systemRoutes.setupSocketHandlers === 'function') {
       systemRoutes.setupSocketHandlers(socket, players);
   }
 
-  // 🔄 Refresh Token - עם Rate Limiting!
+  // 🔄 TOKEN REFRESH HANDLER - מאפשר רענון טוקן בזמן אמת
   socket.on("refresh_token", async (data = {}) => {
     const { newToken } = data;
     if (!newToken) {
-      socket.emit("token_refresh_failed", { error: "no_token" });
+      socket.emit("token_refresh_failed", { error: "no_token_provided" });
       return;
     }
-
-    const rateLimitKey = `refresh_${socket.id}`;
-    const lastRefresh = tokenRefreshRateLimit.get(rateLimitKey) || 0;
-    
-    if (now() - lastRefresh < 5000) {
-      return;
-    }
-    
-    tokenRefreshRateLimit.set(rateLimitKey, now());
 
     const newPlayerData = await verifyTokenWithBase44(newToken);
-    
-    if (!newPlayerData || newPlayerData.playerId !== player.playerId) {
-      player._tokenRefreshFailures = (player._tokenRefreshFailures || 0) + 1;
-      
-      if (player._tokenRefreshFailures >= 3) {
-        console.log(`🚫 Disconnecting ${player.username} - too many token refresh failures`);
-        socket.emit("disconnect_reason", "token_expired");
-        socket.disconnect(true);
-        return;
-      }
-      
-      socket.emit("token_refresh_failed", { error: "invalid" });
+    if (!newPlayerData) {
+      socket.emit("token_refresh_failed", { error: "invalid_token" });
       return;
     }
 
-    player._tokenRefreshFailures = 0;
+    // ✅ וידוא שזה אותו שחקן
+    if (newPlayerData.playerId !== player.playerId) {
+      console.error(`⚠️ SECURITY: ${player.username} tried to refresh with different player token!`);
+      socket.emit("token_refresh_failed", { error: "player_mismatch" });
+      socket.disconnect(true);
+      return;
+    }
 
+    // ✅ עדכון נתוני השחקן עם הטוקן החדש
     Object.assign(player, {
-      user_id: newPlayerData.user_id || player.user_id,
       equipment: newPlayerData.equipment,
       active_transformation_image_url: newPlayerData.active_transformation_image_url,
       active_transformation_settings: newPlayerData.active_transformation_settings,
@@ -447,8 +422,10 @@ io.on("connection", async (socket) => {
       subscription_expires_at: newPlayerData.subscription_expires_at,
     });
 
+    console.log(`🔄 Token refreshed for ${player.username}`);
     socket.emit("token_refresh_ok", { success: true });
     
+    // 📡 שידור עדכון לשאר השחקנים באזור
     io.to(player.current_area).emit("player_update", {
       id: player.playerId,
       playerId: player.playerId,
@@ -457,12 +434,9 @@ io.on("connection", async (socket) => {
       active_transformation_image_url: player.active_transformation_image_url,
       active_transformation_settings: player.active_transformation_settings,
       visual_override_data: player.visual_override_data,
-      active_subscription_tier: player.active_subscription_tier,
-      subscription_expires_at: player.subscription_expires_at,
     });
   });
 
-  // Movement
   socket.on("move_to", (data = {}) => {
     const p = players.get(socket.id);
     if (!p) return;
@@ -478,7 +452,9 @@ io.on("connection", async (socket) => {
       );
 
       for (const admin of adminsInArea) {
-        if (calculateDistance(x, y, admin.position_x, admin.position_y) < KEEP_AWAY_RADIUS) {
+        const distanceToAdmin = calculateDistance(x, y, admin.position_x, admin.position_y);
+        
+        if (distanceToAdmin < KEEP_AWAY_RADIUS) {
           socket.emit("keep_away_blocked", {
             message: `לא ניתן להתקרב למנהל ${admin.username}`,
             admin_username: admin.username
@@ -501,12 +477,14 @@ io.on("connection", async (socket) => {
     }
   });
 
-  // Player Update
   socket.on("player_update", (data = {}) => {
     const p = players.get(socket.id);
     if (!p) return;
 
-    if (data.playerId && data.playerId !== p.playerId) return;
+    if (data.playerId && data.playerId !== p.playerId) {
+      console.error(`⚠️ SECURITY: ${p.username} tried to update another player!`);
+      return;
+    }
 
     if (Number.isFinite(data.x)) p.position_x = data.x;
     if (Number.isFinite(data.y)) p.position_y = data.y;
@@ -515,13 +493,20 @@ io.on("connection", async (socket) => {
     if (typeof data.animation_frame === "string") p.animation_frame = data.animation_frame;
     if (data.equipment && typeof data.equipment === "object") p.equipment = data.equipment;
     
-    if (typeof data.is_invisible === "boolean" && p.admin_level === 'admin') {
-      p.is_invisible = data.is_invisible;
+    if (typeof data.is_invisible === "boolean") {
+      if (p.admin_level === 'admin') {
+        p.is_invisible = data.is_invisible;
+      }
     }
 
-    if (typeof data.keep_away_mode === "boolean" && p.admin_level === 'admin') {
-      p.keep_away_mode = data.keep_away_mode;
-      if (data.keep_away_mode) pushAwayNearbyPlayers(p, p.current_area, io);
+    if (typeof data.keep_away_mode === "boolean") {
+      if (p.admin_level === 'admin') {
+        p.keep_away_mode = data.keep_away_mode;
+        
+        if (data.keep_away_mode) {
+          pushAwayNearbyPlayers(p, p.current_area, io);
+        }
+      }
     }
 
     io.to(p.current_area).emit("player_update", {
@@ -533,7 +518,29 @@ io.on("connection", async (socket) => {
     });
   });
 
-  // Chat
+  socket.on("admin_kick_player", (data = {}) => {
+    const admin = players.get(socket.id);
+    if (!admin || admin.admin_level !== 'admin') return;
+
+    const targetPlayerId = data.target_player_id;
+    if (!targetPlayerId) return;
+
+    const targetSocketId = getSocketIdByPlayerId(targetPlayerId);
+    if (!targetSocketId) return;
+
+    const targetPlayer = players.get(targetSocketId);
+    if (!targetPlayer) return;
+
+    console.log(`👢 Admin ${admin.username} kicked ${targetPlayer.username}`);
+    io.to(targetSocketId).emit("kicked_by_admin");
+    
+    setTimeout(() => {
+      io.sockets.sockets.get(targetSocketId)?.disconnect(true);
+      players.delete(targetSocketId);
+    }, 1000);
+  });
+
+  // ========== CHAT_MESSAGE - WITH SERVER-SIDE BANNED WORDS CHECK ==========
   socket.on("chat_message", async (data = {}) => {
     const p = players.get(socket.id);
     if (!p) return;
@@ -541,6 +548,7 @@ io.on("connection", async (socket) => {
     const msg = (data.message ?? data.text ?? "").toString().trim();
     if (!msg) return;
 
+    // 🔒 Rate Limiting
     const key = `chat_${p.playerId}`;
     const last = chatRateLimit.get(key) || 0;
     if (now() - last < 1000) {
@@ -549,6 +557,7 @@ io.on("connection", async (socket) => {
     }
     chatRateLimit.set(key, now());
 
+    // 🔒 Banned Words Check on Server!
     try {
       const bannedWordsResponse = await fetch(`${BASE44_API_URL}/entities/BannedWord`, {
         method: "GET",
@@ -560,86 +569,110 @@ io.on("connection", async (socket) => {
 
       if (bannedWordsResponse.ok) {
         const bannedWords = await bannedWordsResponse.json();
-        const msgCheck = msg.toLowerCase().replace(/\s+/g, '').replace(/[^\u0590-\u05FFa-z0-9]/g, '');
-        for (const w of bannedWords) {
-          const wCheck = w.word.toLowerCase().replace(/\s+/g, '').replace(/[^\u0590-\u05FFa-z0-9]/g, '');
-          if (msgCheck.includes(wCheck)) return;
+        const bannedWordsList = bannedWords.map(w => w.word.toLowerCase().trim());
+        
+        const messageToCheck = msg.toLowerCase().replace(/\s+/g, '').replace(/[^\u0590-\u05FFa-z0-9]/g, '');
+        
+        let foundBanned = false;
+        for (const bannedWord of bannedWordsList) {
+          const bannedWordNoSpaces = bannedWord.replace(/\s+/g, '').replace(/[^\u0590-\u05FFa-z0-9]/g, '');
+          if (messageToCheck.includes(bannedWordNoSpaces)) {
+            foundBanned = true;
+            console.log(`🚫 BLOCKED by server: "${msg}" contains "${bannedWord}"`);
+            break;
+          }
+        }
+        
+        if (foundBanned) {
+          return;
         }
       }
-    } catch (error) {}
+    } catch (error) {
+      console.error('❌ Error checking banned words:', error);
+    }
 
-    io.to(p.current_area).emit("chat_message", {
+    // ✅ Message is clean - broadcast it!
+    const payload = {
       id: p.playerId,
       playerId: p.playerId,
       username: p.username,
       admin_level: p.admin_level,
       message: msg,
       timestamp: Date.now(),
-    });
+    };
+
+    io.to(p.current_area).emit("chat_message", payload);
   });
 
-  // Admin Actions
-  socket.on("admin_kick_player", (data = {}) => {
-    const admin = players.get(socket.id);
-    if (!admin || admin.admin_level !== 'admin') return;
+  socket.on("admin_config_updated", (data = {}) => {
+    const adminPlayer = players.get(socket.id);
+    if (!adminPlayer) return;
+    if (!["admin", "senior_touch"].includes(adminPlayer.admin_level)) return;
 
-    const targetSocketId = getSocketIdByPlayerId(data.target_player_id);
-    if (targetSocketId) {
-        io.to(targetSocketId).emit("kicked_by_admin");
-        setTimeout(() => io.sockets.sockets.get(targetSocketId)?.disconnect(true), 1000);
-        players.delete(targetSocketId);
+    console.log(`⚙️ Admin ${adminPlayer.username} updated config: ${data.type}`);
+    
+    io.emit("config_refresh_required", { type: data.type });
+  });
+
+  socket.on("admin_system_message", (messageData = {}) => {
+    const adminPlayer = players.get(socket.id);
+    if (!adminPlayer) return;
+    if (!["admin", "senior_touch"].includes(adminPlayer.admin_level)) return;
+
+    const payload = {
+      id: "system",
+      username: messageData.sender_name || adminPlayer.username,
+      admin_level: adminPlayer.admin_level,
+      message: String(messageData.message || "").slice(0, 300),
+      timestamp: Date.now(),
+    };
+
+    const target = messageData.target_area || "all";
+    if (target === "current") {
+      io.to(adminPlayer.current_area).emit("chat_message", payload);
+    } else {
+      io.emit("chat_message", payload);
     }
   });
 
-  socket.on("admin_config_updated", (data) => io.emit("config_refresh_required", { type: data.type }));
-  
-  socket.on("admin_system_message", (data) => {
-    if (!['admin', 'senior_touch'].includes(players.get(socket.id)?.admin_level)) return;
-    const payload = {
-        id: "system",
-        username: data.sender_name,
-        admin_level: players.get(socket.id).admin_level,
-        message: data.message,
-        timestamp: Date.now()
-    };
-    if (data.target_area === 'current') io.to(players.get(socket.id).current_area).emit("chat_message", payload);
-    else io.emit("chat_message", payload);
-  });
-
-  // Area Change
   socket.on("change_area", (data = {}) => {
     const p = players.get(socket.id);
-    if (!p || !data.newArea || data.newArea === p.current_area) return;
+    if (!p) return;
+
+    const newArea = data.newArea;
+    if (!newArea || newArea === p.current_area) return;
 
     const oldArea = p.current_area;
     socket.leave(oldArea);
-    p.current_area = data.newArea;
-    socket.join(data.newArea);
+    p.current_area = newArea;
+    socket.join(newArea);
 
     socket.to(oldArea).emit("player_area_changed", { id: p.playerId, playerId: p.playerId });
-    
+
     const peers = Array.from(players.values())
-      .filter(pp => pp.current_area === data.newArea && pp.socketId !== socket.id)
+      .filter(pp => pp.current_area === newArea && pp.socketId !== socket.id)
       .map(safePlayerView);
 
     socket.emit("current_players", peers);
-    socket.to(data.newArea).emit("player_joined", safePlayerView(p));
-    
-    socket.emit("donuts_sync", donutManager.getDonutsForArea(data.newArea));
+    socket.to(newArea).emit("player_joined", safePlayerView(p));
+
+    const currentDonuts = donutManager.getDonutsForArea(newArea);
+    socket.emit("donuts_sync", currentDonuts);
   });
 
-  // Disconnect
   socket.on("disconnect", (reason) => {
     const p = players.get(socket.id);
-    if (p) {
-        console.log(`🔴 Disconnect: ${p.username} | ${reason}`);
-        socket.to(p.current_area).emit("player_disconnected", p.playerId);
-        if (tradeManager?.handleDisconnect) tradeManager.handleDisconnect(socket.id);
-        
-        tokenRefreshRateLimit.delete(`refresh_${socket.id}`);
-        
-        players.delete(socket.id);
+    if (!p) return;
+
+    console.log(`🔴 Disconnect: ${p.username} | ${reason}`);
+    
+    socket.to(p.current_area).emit("player_disconnected", p.playerId);
+
+    if (tradeManager && typeof tradeManager.handleDisconnect === 'function') {
+        tradeManager.handleDisconnect(socket.id);
     }
+
+    players.delete(socket.id);
   });
 });
 
@@ -648,7 +681,7 @@ setInterval(() => {
   const updatesByArea = new Map();
 
   for (const [sid, player] of players) {
-    if (player.is_moving && player.destination_x !== undefined) {
+    if (player.is_moving && player.destination_x !== undefined && player.destination_y !== undefined) {
       const dx = player.destination_x - player.position_x;
       const dy = player.destination_y - player.position_y;
       const distance = Math.sqrt(dx * dx + dy * dy);
@@ -660,29 +693,49 @@ setInterval(() => {
         player.destination_x = undefined;
         player.destination_y = undefined;
       } else {
-        let speed = 10;
-        if (player.active_transformation_settings?.speed) speed *= Number(player.active_transformation_settings.speed);
-        player.position_x += (dx / distance) * speed;
-        player.position_y += (dy / distance) * speed;
+        let moveSpeed = 10;
+        if (player.active_transformation_settings?.speed) {
+            moveSpeed *= Number(player.active_transformation_settings.speed) || 1;
+        }
+        
+        player.position_x += (dx / distance) * moveSpeed;
+        player.position_y += (dy / distance) * moveSpeed;
       }
 
       if (player.admin_level === 'user') {
-          const areaAdmins = Array.from(players.values()).filter(p => 
-              p.current_area === player.current_area && p.admin_level === 'admin' && p.keep_away_mode
+        const adminsInArea = Array.from(players.values()).filter(
+          admin => admin.current_area === player.current_area && 
+                  admin.admin_level === 'admin' && 
+                  admin.keep_away_mode === true
+        );
+
+        for (const admin of adminsInArea) {
+          const distanceToAdmin = calculateDistance(
+            player.position_x,
+            player.position_y,
+            admin.position_x,
+            admin.position_y
           );
-          for (const admin of areaAdmins) {
-              if (calculateDistance(player.position_x, player.position_y, admin.position_x, admin.position_y) < KEEP_AWAY_RADIUS) {
-                  const safe = calculateSafePosition(player.position_x, player.position_y, admin.position_x, admin.position_y, KEEP_AWAY_RADIUS);
-                  player.position_x = safe.x;
-                  player.position_y = safe.y;
-                  player.is_moving = false;
-                  player.destination_x = undefined;
-              }
+
+          if (distanceToAdmin < KEEP_AWAY_RADIUS) {
+            const safePos = calculateSafePosition(
+              player.position_x,
+              player.position_y,
+              admin.position_x,
+              admin.position_y,
+              KEEP_AWAY_RADIUS
+            );
+
+            player.position_x = safePos.x;
+            player.position_y = safePos.y;
+            player.is_moving = false;
+            player.destination_x = undefined;
+            player.destination_y = undefined;
           }
+        }
       }
 
-      if (!updatesByArea.has(player.current_area)) updatesByArea.set(player.current_area, []);
-      updatesByArea.get(player.current_area).push({
+      const update = {
         id: player.playerId,
         playerId: player.playerId,
         socketId: sid,
@@ -692,7 +745,12 @@ setInterval(() => {
         is_moving: player.is_moving,
         animation_frame: player.is_moving ? "walk" : "idle",
         is_invisible: player.is_invisible,
-      });
+      };
+
+      if (!updatesByArea.has(player.current_area)) {
+        updatesByArea.set(player.current_area, []);
+      }
+      updatesByArea.get(player.current_area).push(update);
     }
   }
 
@@ -701,23 +759,36 @@ setInterval(() => {
   }
 }, 50);
 
-// ✅ ניקוי rate limits ישנים כל דקה
-setInterval(() => {
-  const cutoff = now() - 60000;
-  for (const [key, timestamp] of tokenRefreshRateLimit.entries()) {
-    if (timestamp < cutoff) {
-      tokenRefreshRateLimit.delete(key);
-    }
-  }
-}, 60000);
-
 // ---------- Start ----------
 httpServer.listen(PORT, () => {
+  console.log(`\n${"★".repeat(60)}`);
   console.log(`🚀 Touch World Server v${VERSION} - Port ${PORT}`);
-  console.log(`🛡️ TOKEN FLOOD PROTECTION ENABLED`);
-  console.log(`✅ SUBSCRIPTION DATA SYNC ENABLED`);
+  console.log(`✅ PLAYER-ONLY SYSTEM - NO BASE44 USERS!`);
+  console.log(`✅ CUSTOM JWT AUTHENTICATION!`);
+  console.log(`🔄 TOKEN REFRESH SYSTEM - LIVE TOKEN UPDATES!`);
+  console.log(`✅ TRADE SYSTEM with EQUIPMENT REMOVAL + DB UPDATE!`);
+  console.log(`✅ ADMIN MODERATION enabled!`);
+  console.log(`👻 STEALTH MODE enabled!`);
+  console.log(`🚫 KEEP-AWAY MODE: ${KEEP_AWAY_RADIUS}px!`);
+  console.log(`💬 CHAT BUBBLE SYNC enabled!`);
+  console.log(`🍩 Donut System Integration!`);
+  console.log(`🧪 Potion System Integration!`);
+  console.log(`🚫 Server-Side Banned Words Check!`);
+  console.log(`${"★".repeat(60)}\n`);
   
-  if (donutManager?.initialize) donutManager.initialize(io, BASE44_SERVICE_KEY, BASE44_API_URL);
-  if (tradeManager?.initialize) tradeManager.initialize(io, BASE44_API_URL, BASE44_SERVICE_KEY, players, getSocketIdByPlayerId);
-  if (systemRoutes?.initialize) systemRoutes.initialize(io, BASE44_SERVICE_KEY, BASE44_API_URL);
+  if (donutManager && typeof donutManager.initialize === 'function') {
+      donutManager.initialize(io, BASE44_SERVICE_KEY, BASE44_API_URL);
+  } else {
+      console.error('❌ Donut Manager Initialize function NOT FOUND!');
+  }
+
+  if (tradeManager && typeof tradeManager.initialize === 'function') {
+      tradeManager.initialize(io, BASE44_API_URL, BASE44_SERVICE_KEY, players, getSocketIdByPlayerId);
+  } else {
+      console.error('❌ Trade Manager Initialize function NOT FOUND!');
+  }
+
+  if (systemRoutes && typeof systemRoutes.initialize === 'function') {
+      systemRoutes.initialize(io, BASE44_SERVICE_KEY, BASE44_API_URL);
+  }
 });
