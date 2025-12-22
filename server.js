@@ -37,11 +37,11 @@ const PORT = process.env.PORT || 10000;
 const JWT_SECRET = process.env.JWT_SECRET;
 const VERIFY_TOKEN_URL =
   process.env.VERIFY_TOKEN_URL ||
-  "https://68e269394d8f2fa24e82cd71.base44.app/api/functions/verifyWebSocketToken";
+  "https://touch-world.online/api/functions/verifyWebSocketToken";
 const BASE44_SERVICE_KEY = process.env.BASE44_SERVICE_KEY;
 const BASE44_API_URL =
   process.env.BASE44_API_URL ||
-  "https://68e269394d8f2fa24e82cd71.base44.app/api";
+  "https://touch-world.online/api";
 const HEALTH_KEY = process.env.HEALTH_KEY || "secret-health";
 
 if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
