@@ -37,11 +37,11 @@ const PORT = process.env.PORT || 10000;
 const JWT_SECRET = process.env.JWT_SECRET;
 const VERIFY_TOKEN_URL =
   process.env.VERIFY_TOKEN_URL ||
-  "https://base44.app/api/apps/68e269394d8f2fa24e82cd71/functions/verifyWebSocketToken";
+  "https://68e269394d8f2fa24e82cd71.base44.app/api/functions/verifyWebSocketToken";
 const BASE44_SERVICE_KEY = process.env.BASE44_SERVICE_KEY;
 const BASE44_API_URL =
   process.env.BASE44_API_URL ||
-  "https://base44.app/api/apps/68e269394d8f2fa24e82cd71";
+  "https://68e269394d8f2fa24e82cd71.base44.app/api";
 const HEALTH_KEY = process.env.HEALTH_KEY || "secret-health";
 
 if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
@@ -116,7 +116,6 @@ function normalizePlayerShape(playerData) {
       equipped_shoes: playerData?.equipped_shoes,
       equipped_gloves: playerData?.equipped_gloves,
       equipped_face: playerData?.equipped_face,
-      equipped_board: playerData?.equipped_board,
       equipped_accessory: playerData?.equipped_accessory,
       ...(playerData?.equipment || {}),
     },
@@ -165,7 +164,6 @@ async function verifyTokenWithBase44(token) {
       throw new Error("normalized playerId missing");
     }
 
-    // 🔒 Session validation
     if (result.sessionId && result.player.session_id) {
       if (result.sessionId !== result.player.session_id) {
         throw new Error("Session mismatch - possible token hijacking");
@@ -287,7 +285,6 @@ app.get("/health", (req, res) => {
   });
 });
 
-// ---------- Broadcast Config Endpoint ----------
 app.post("/broadcast-config", (req, res) => {
   const key = req.headers["x-health-key"];
   if (key !== HEALTH_KEY) return res.status(403).json({ ok: false });
@@ -300,11 +297,9 @@ app.post("/broadcast-config", (req, res) => {
   res.json({ ok: true, broadcasted: true });
 });
 
-// ========== SYSTEM ROUTES SETUP (POTION SYSTEM) ==========
 systemRoutes.setupRoutes(app, io, players, getSocketIdByPlayerId, BASE44_SERVICE_KEY);
 console.log('✅ System Routes (Potion System) initialized');
 
-// ---------- Connection ----------
 io.on("connection", async (socket) => {
   const token = socket.handshake.auth?.token;
   if (!token) {
@@ -320,7 +315,6 @@ io.on("connection", async (socket) => {
     return;
   }
 
-  // 🔄 Kick duplicate sessions
   for (const [sid, p] of players.entries()) {
     if (p.playerId === playerData.playerId && sid !== socket.id) {
       console.log(`⚠️ Kicking duplicate session for ${p.username} (token refresh)`);
@@ -387,7 +381,6 @@ io.on("connection", async (socket) => {
       systemRoutes.setupSocketHandlers(socket, players);
   }
 
-  // 🔄 TOKEN REFRESH HANDLER
   socket.on("refresh_token", async (data = {}) => {
     const { newToken } = data;
     if (!newToken) {
@@ -543,7 +536,6 @@ io.on("connection", async (socket) => {
     const msg = (data.message ?? data.text ?? "").toString().trim();
     if (!msg) return;
 
-    // 🔒 Rate Limiting
     const key = `chat_${p.playerId}`;
     const last = chatRateLimit.get(key) || 0;
     if (now() - last < 1000) {
@@ -552,7 +544,6 @@ io.on("connection", async (socket) => {
     }
     chatRateLimit.set(key, now());
 
-    // 🔒 Banned Words Check
     try {
       const bannedWordsResponse = await fetch(`${BASE44_API_URL}/entities/BannedWord`, {
         method: "GET",
@@ -668,7 +659,6 @@ io.on("connection", async (socket) => {
   });
 });
 
-// ========== GAME LOOP ==========
 setInterval(() => {
   const updatesByArea = new Map();
 
@@ -751,7 +741,6 @@ setInterval(() => {
   }
 }, 50);
 
-// ---------- Start ----------
 httpServer.listen(PORT, () => {
   console.log(`\n${"★".repeat(60)}`);
   console.log(`🚀 Touch World Server v${VERSION} - Port ${PORT}`);
