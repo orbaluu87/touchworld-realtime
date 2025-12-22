@@ -16,7 +16,7 @@ app.use(express.json());
 app.use(helmet());
 
 // ---------- CORS ----------
-const allowedOrigins = (Deno.env.get("ALLOWED_ORIGINS") || "")
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || "")
   .split(",")
   .map(s => s.trim())
   .filter(Boolean);
@@ -31,18 +31,18 @@ app.use(
 
 // ---------- Server ----------
 const httpServer = createServer(app);
-const PORT = Deno.env.get("PORT") || 10000;
+const PORT = process.env.PORT || 10000;
 
 // ---------- Env / Security ----------
-const JWT_SECRET = Deno.env.get("JWT_SECRET");
+const JWT_SECRET = process.env.JWT_SECRET;
 const VERIFY_TOKEN_URL =
-  Deno.env.get("VERIFY_TOKEN_URL") ||
+  process.env.VERIFY_TOKEN_URL ||
   "https://base44.app/api/apps/68e269394d8f2fa24e82cd71/functions/verifyWebSocketToken";
-const BASE44_SERVICE_KEY = Deno.env.get("BASE44_SERVICE_KEY");
+const BASE44_SERVICE_KEY = process.env.BASE44_SERVICE_KEY;
 const BASE44_API_URL =
-  Deno.env.get("BASE44_API_URL") ||
+  process.env.BASE44_API_URL ||
   "https://base44.app/api/apps/68e269394d8f2fa24e82cd71";
-const HEALTH_KEY = Deno.env.get("HEALTH_KEY") || "secret-health";
+const HEALTH_KEY = process.env.HEALTH_KEY || "secret-health";
 
 if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   console.error("❌ Missing security keys");
