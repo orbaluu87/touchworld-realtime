@@ -287,7 +287,6 @@ module.exports = {
 
       // 🔒 בדיקה אם השולח עצמו חסום מהחלפות
       try {
-        console.log(`🔍 Checking if INITIATOR ${initiator.username} (${initiator.playerId}) has trades_blocked...`);
         const initiatorDataResponse = await fetch(`${BASE44_API_URL}/entities/Player/${initiator.playerId}`, {
           method: "GET",
           headers: {
@@ -298,14 +297,14 @@ module.exports = {
 
         if (initiatorDataResponse.ok) {
           const initiatorData = await initiatorDataResponse.json();
-          console.log(`🔍 Initiator data trades_blocked:`, initiatorData.trades_blocked);
-          
-          if (initiatorData.trades_blocked === true) {
+
+          // חסימה על ידי מנהל = לצמיתות
+          if (initiatorData.trades_blocked_by_admin === true) {
             io.to(socket.id).emit("trade_request_failed", {
               reason: "you_are_trade_banned",
-              message: "אתה חסום משליחה וקבלת החלפות. פנה למנהל לפרטים נוספים."
+              message: "אתה חסום להחלפות לצמיתות. פנה למנהל לפרטים נוספים."
             });
-            console.log(`🚫 Trade Request BLOCKED: ${initiator.username} is TRADE BANNED`);
+            console.log(`🚫 Trade Request BLOCKED: ${initiator.username} is TRADE BANNED by admin`);
             return;
           }
         }
@@ -315,7 +314,6 @@ module.exports = {
 
       // 🔒 בדיקה אם המקבל חסם החלפות
       try {
-        console.log(`🔍 Checking if ${receiver.username} (${receiverId}) has trades_blocked...`);
         const receiverDataResponse = await fetch(`${BASE44_API_URL}/entities/Player/${receiverId}`, {
           method: "GET",
           headers: {
@@ -324,28 +322,31 @@ module.exports = {
           },
         });
 
-        console.log(`🔍 Response status: ${receiverDataResponse.status}`);
-
         if (receiverDataResponse.ok) {
           const receiverData = await receiverDataResponse.json();
-          console.log(`🔍 Receiver data trades_blocked:`, receiverData.trades_blocked);
-          
-          if (receiverData.trades_blocked === true) {
+
+          // חסימה על ידי מנהל = לצמיתות
+          if (receiverData.trades_blocked_by_admin === true) {
             io.to(socket.id).emit("trade_request_failed", {
               reason: "target_trade_banned",
-              message: "השחקן שאליו ניסית לשלוח החלפה חסום מקבלת החלפות."
+              message: "משתמש זה חסום להחלפות לצמיתות."
             });
-            console.log(`🚫 Trade Request BLOCKED: ${receiver.username} has trades_blocked enabled`);
+            console.log(`🚫 Trade Request BLOCKED: ${receiver.username} is TRADE BANNED by admin`);
             return;
-          } else {
-            console.log(`✅ ${receiver.username} allows trades (trades_blocked: ${receiverData.trades_blocked})`);
           }
-        } else {
-          console.error(`❌ Failed to fetch player data: ${receiverDataResponse.status}`);
+
+          // חסימה על ידי המשתמש עצמו = זמנית
+          if (receiverData.trades_blocked === true) {
+            io.to(socket.id).emit("trade_request_failed", {
+              reason: "target_trade_blocked",
+              message: "משתמש זה חסם החלפות!"
+            });
+            console.log(`🚫 Trade Request BLOCKED: ${receiver.username} blocked trades in settings`);
+            return;
+          }
         }
       } catch (error) {
         console.error("❌ Error checking trades_blocked:", error);
-        // אם יש שגיאה, נמשיך בזהירות - לא נחסום
       }
 
       // ✅ בדיקה אם המקבל כבר בהחלפה
