@@ -50,6 +50,8 @@ async function kickPlayer(adminPlayerId, targetPlayerId, reason = null) {
 // ========== BAN PLAYER ==========
 async function banPlayer(targetPlayerId, durationMinutes, reason = null, adminUsername = null) {
     try {
+        console.log(`🚫 Starting ban process for player: ${targetPlayerId}`);
+        
         // עדכון ה-DB
         const updateUrl = `${BASE44_API_URL}/entities/Player/${targetPlayerId}`;
         
@@ -76,28 +78,14 @@ async function banPlayer(targetPlayerId, durationMinutes, reason = null, adminUs
             throw new Error(`Failed to update player: ${response.statusText}`);
         }
 
-        // ניתוק מיידי אם מחובר
-        const targetSocketId = getSocketIdByPlayerId(targetPlayerId);
-        if (targetSocketId) {
-            const targetPlayer = players.get(targetSocketId);
-            
-            console.log(`🚫 Banned ${targetPlayer?.username || 'Unknown'} - ${durationMinutes > 0 ? `${durationMinutes} minutes` : 'PERMANENT'}`);
-            
-            io.to(targetSocketId).emit("banned_by_admin", {
-                reason: updateData.ban_reason,
-                is_permanent: durationMinutes === 0,
-                expires_at: updateData.ban_expires_at
-            });
-            
-            setTimeout(() => {
-                io.sockets.sockets.get(targetSocketId)?.disconnect(true);
-                players.delete(targetSocketId);
-            }, 1500);
-        }
+        console.log(`✅ Database updated for player ${targetPlayerId}`);
+
+        // ניתוק מיידי - שימוש ב-kickPlayer
+        await kickPlayer(targetPlayerId, `הורחקת: ${updateData.ban_reason}`, adminUsername);
 
         return { 
             success: true, 
-            message: `שחקן הורחק ${durationMinutes > 0 ? `ל-${durationMinutes} דקות` : 'לצמיתות'}` 
+            message: `שחקן הורחק ${durationMinutes > 0 ? `ל-${durationMinutes} דקות` : 'לצמיתות'} ונותק מהמשחק` 
         };
 
     } catch (error) {
