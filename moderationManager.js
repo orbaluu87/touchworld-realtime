@@ -20,27 +20,31 @@ function initialize(ioInstance, serviceKey, apiUrl, playersMap, getSocketIdFunc)
 }
 
 // ========== KICK PLAYER ==========
-async function kickPlayer(adminPlayerId, targetPlayerId, reason = null) {
+async function kickPlayer(targetPlayerId, reason = null, adminUsername = null) {
     const targetSocketId = getSocketIdByPlayerId(targetPlayerId);
     if (!targetSocketId) {
+        console.log(`⚠️ Target player ${targetPlayerId} not online`);
         return { success: false, error: 'Player not online' };
     }
 
     const targetPlayer = players.get(targetSocketId);
     if (!targetPlayer) {
+        console.log(`⚠️ Target player ${targetPlayerId} not found in players map`);
         return { success: false, error: 'Player not found' };
     }
 
-    const adminPlayer = Array.from(players.values()).find(p => p.playerId === adminPlayerId);
-    
-    console.log(`👢 Admin ${adminPlayer?.username || 'Unknown'} kicked ${targetPlayer.username}`);
+    console.log(`👢 ${adminUsername || 'Admin'} kicked ${targetPlayer.username} (${targetPlayerId})`);
     
     io.to(targetSocketId).emit("kicked_by_admin", { 
         reason: reason || 'הורחקת על ידי מנהל' 
     });
     
     setTimeout(() => {
-        io.sockets.sockets.get(targetSocketId)?.disconnect(true);
+        const socket = io.sockets.sockets.get(targetSocketId);
+        if (socket) {
+            socket.disconnect(true);
+            console.log(`✅ Kicked and disconnected ${targetPlayer.username}`);
+        }
         players.delete(targetSocketId);
     }, 1000);
 
@@ -80,8 +84,31 @@ async function banPlayer(targetPlayerId, durationMinutes, reason = null, adminUs
 
         console.log(`✅ Database updated for player ${targetPlayerId}`);
 
-        // ניתוק מיידי - שימוש ב-kickPlayer
-        await kickPlayer(targetPlayerId, `הורחקת: ${updateData.ban_reason}`, adminUsername);
+        // ניתוק מיידי של השחקן
+        const targetSocketId = getSocketIdByPlayerId(targetPlayerId);
+        if (targetSocketId) {
+            const targetPlayer = players.get(targetSocketId);
+            console.log(`🚫 Disconnecting banned player ${targetPlayer?.username} immediately`);
+            
+            // שליחת אירוע banned_by_admin לפני ניתוק
+            io.to(targetSocketId).emit("banned_by_admin", {
+                reason: updateData.ban_reason,
+                is_permanent: durationMinutes === 0,
+                expires_at: updateData.ban_expires_at
+            });
+            
+            // ניתוק מיידי
+            setTimeout(() => {
+                const socket = io.sockets.sockets.get(targetSocketId);
+                if (socket) {
+                    socket.disconnect(true);
+                    console.log(`✅ Banned player ${targetPlayer?.username} disconnected`);
+                }
+                players.delete(targetSocketId);
+            }, 1000);
+        } else {
+            console.log(`⚠️ Player ${targetPlayerId} not currently online`);
+        }
 
         return { 
             success: true, 
@@ -274,7 +301,7 @@ function setupSocketHandlers(socket, playersMap) {
         const admin = playersMap.get(socket.id);
         if (!admin || admin.admin_level !== 'admin') return;
 
-        const result = await kickPlayer(admin.playerId, data.target_player_id, data.reason);
+        const result = await kickPlayer(data.target_player_id, data.reason, admin.username);
         
         if (result.success) {
             await logAdminAction(admin.playerId, admin.username, 'kick', data.target_player_id, result.message);
