@@ -1,5 +1,5 @@
 // ============================================================================
-// Touch World - Socket Server v11.11.0 - MISHLOACH MANOT INTEGRATION
+// Touch World - Socket Server v11.11.0 - MISHLOACH MANOT MANAGER INTEGRATION
 // ============================================================================
 
 const { createServer } = require("http");
