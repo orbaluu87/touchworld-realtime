@@ -1,5 +1,5 @@
 // ============================================================================
-// Touch World - Socket Server v11.10.0 - MODERATION MANAGER INTEGRATION
+// Touch World - Socket Server v11.11.0 - MISHLOACH MANOT INTEGRATION
 // ============================================================================
 
 const { createServer } = require("http");
@@ -11,6 +11,7 @@ const donutManager = require("./donutManager");
 const tradeManager = require("./tradeManager");
 const systemRoutes = require("./systemRoutes");
 const moderationManager = require("./moderationManager");
+const mishloachManotManager = require("./mishloachManotManager");
 
 const app = express();
 app.use(express.json());
@@ -50,7 +51,7 @@ if (!JWT_SECRET || !BASE44_SERVICE_KEY || !HEALTH_KEY) {
   throw new Error("Missing security keys");
 }
 
-const VERSION = "11.10.0";
+const VERSION = "11.11.0";
 
 // ---------- State ----------
 const players = new Map();
@@ -305,6 +306,9 @@ console.log('✅ System Routes (Potion System) initialized');
 moderationManager.initialize(io, BASE44_SERVICE_KEY, BASE44_API_URL, players, getSocketIdByPlayerId);
 console.log('✅ Moderation Manager initialized');
 
+mishloachManotManager.initialize(io, BASE44_SERVICE_KEY, BASE44_API_URL, players, getSocketIdByPlayerId);
+console.log('✅ Mishloach Manot Manager initialized');
+
 io.on("connection", async (socket) => {
   const token = socket.handshake.auth?.token;
   if (!token) {
@@ -389,6 +393,10 @@ io.on("connection", async (socket) => {
 
   if (moderationManager && typeof moderationManager.setupSocketHandlers === 'function') {
       moderationManager.setupSocketHandlers(socket, players);
+  }
+
+  if (mishloachManotManager && typeof mishloachManotManager.setupSocketHandlers === 'function') {
+      mishloachManotManager.setupSocketHandlers(socket, players);
   }
 
   socket.on("refresh_token", async (data = {}) => {
@@ -737,6 +745,7 @@ httpServer.listen(PORT, () => {
   console.log(`🔄 TOKEN REFRESH SYSTEM - LIVE TOKEN UPDATES!`);
   console.log(`✅ TRADE SYSTEM with EQUIPMENT REMOVAL + DB UPDATE!`);
   console.log(`🚫 MODERATION SYSTEM (moderationManager.js)!`);
+  console.log(`🎁 MISHLOACH MANOT SYSTEM (mishloachManotManager.js)!`);
   console.log(`👻 STEALTH MODE enabled!`);
   console.log(`🚫 KEEP-AWAY MODE: ${KEEP_AWAY_RADIUS}px!`);
   console.log(`💬 CHAT BUBBLE SYNC enabled!`);
