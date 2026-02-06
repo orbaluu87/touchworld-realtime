@@ -29,6 +29,7 @@ function setupSocketHandlers(socket, playersMap) {
             giftCoins, 
             giftGems, 
             itemsCount,
+            giftItems,
             message,
             giftId 
         } = data;
@@ -38,19 +39,20 @@ function setupSocketHandlers(socket, playersMap) {
             return;
         }
 
-        console.log(`🎁 ${sender.username} sent mishloach manot to ${receiverUsername}`);
+        console.log(`🎁 ${sender.username} sent mishloach manot to ${receiverUsername}`, { giftItems });
 
         // 📡 שידור למקבל אם הוא מחובר
         const receiverSocketId = getSocketIdByPlayerId(receiverPlayerId);
         
         const giftNotification = {
             type: "mishloach_manot",
-            giftId: giftId,
+            gift_id: giftId,
             from_username: sender.username,
             from_player_id: sender.playerId,
             gift_coins: giftCoins || 0,
             gift_gems: giftGems || 0,
             items_count: itemsCount || 0,
+            gift_items: giftItems || [],
             message: message || "",
             timestamp: Date.now()
         };
@@ -123,7 +125,10 @@ function setupSocketHandlers(socket, playersMap) {
 
 // 🔔 פונקציה לשליחת התראה על משלוח מנות חדש (נקראת מבחוץ)
 function notifyNewMishloachManot(receiverPlayerId, giftData) {
-    if (!io || !getSocketIdByPlayerId) return false;
+    if (!io || !getSocketIdByPlayerId) {
+        console.error('❌ Mishloach Manot Manager not initialized');
+        return false;
+    }
 
     const receiverSocketId = getSocketIdByPlayerId(receiverPlayerId);
     if (receiverSocketId) {
@@ -132,8 +137,11 @@ function notifyNewMishloachManot(receiverPlayerId, giftData) {
             ...giftData,
             timestamp: Date.now()
         });
+        console.log(`📬 Mishloach manot notification sent to ${receiverPlayerId}`);
         return true;
     }
+    
+    console.log(`ℹ️ Player ${receiverPlayerId} not online - will see on next login`);
     return false;
 }
 
