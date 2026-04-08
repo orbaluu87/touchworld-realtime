@@ -14,6 +14,44 @@ const mishloachManotManager = require('./mishloachManotManager');
 
 const now = () => Date.now();
 
+// ---------- Constants ----------
+const VALID_DIRECTIONS = new Set(["n", "s", "e", "w", "ne", "nw", "se", "sw", "front", "back"]);
+const VALID_ANIMATION_FRAMES = new Set(["idle", "walk", "run", "sit", "jump"]);
+const VALID_EQUIPMENT_KEYS = new Set([
+  "skin_code", "equipped_hair", "equipped_top", "equipped_pants",
+  "equipped_hat", "equipped_necklace", "equipped_halo", "equipped_shoes",
+  "equipped_gloves", "equipped_face", "equipped_accessory",
+]);
+const MAX_COORD = 99999;
+const MAX_CHAT_LENGTH = 300;
+
+// ---------- Banned Words Cache (refreshed every 5 minutes) ----------
+let bannedWordsCache = { words: [], expiresAt: 0 };
+
+async function getBannedWords() {
+  if (Date.now() < bannedWordsCache.expiresAt) return bannedWordsCache.words;
+  try {
+    const res = await fetch(`${BASE44_API_URL}/entities/BannedWord`, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${BASE44_SERVICE_KEY}`,
+      },
+    });
+    if (res.ok) {
+      const list = await res.json();
+      bannedWordsCache = {
+        words: list.map(w => w.word.toLowerCase().trim().replace(/\s+/g, '').replace(/[^\u0590-\u05FFa-z0-9]/g, '')),
+        expiresAt: Date.now() + 5 * 60 * 1000,
+      };
+    }
+  } catch (err) {
+    console.error('❌ Error fetching banned words:', err.message);
+  }
+  return bannedWordsCache.words;
+}
+
+// ---------- Main Handler ----------
 function setupSocketHandlers(io) {
   io.on("connection", async (socket) => {
     const token = socket.handshake.auth?.token;
@@ -100,6 +138,7 @@ function setupSocketHandlers(io) {
       mishloachManotManager.setupSocketHandlers(socket, players);
     }
 
+    // -------- refresh_token --------
     socket.on("refresh_token", async (data = {}) => {
       const { newToken } = data;
       if (!newToken) {
@@ -145,12 +184,16 @@ function setupSocketHandlers(io) {
       });
     });
 
+    // -------- move_to --------
     socket.on("move_to", (data = {}) => {
       const p = players.get(socket.id);
       if (!p) return;
 
       const { x, y } = data;
-      if (typeof x !== "number" || typeof y !== "number") return;
+      // FIX: use Number.isFinite — rejects NaN, Infinity, and non-numbers
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      // FIX: validate coordinate bounds
+      if (x < 0 || x > MAX_COORD || y < 0 || y > MAX_COORD) return;
 
       if (p.admin_level === 'user') {
         const adminsInArea = Array.from(players.values()).filter(
@@ -183,6 +226,7 @@ function setupSocketHandlers(io) {
       }
     });
 
+    // -------- player_update --------
     socket.on("player_update", (data = {}) => {
       const p = players.get(socket.id);
       if (!p) return;
@@ -192,12 +236,25 @@ function setupSocketHandlers(io) {
         return;
       }
 
-      if (Number.isFinite(data.x)) p.position_x = data.x;
-      if (Number.isFinite(data.y)) p.position_y = data.y;
-      if (typeof data.direction === "string") p.direction = data.direction;
+      // FIX: position updates removed — position is owned by the server (move_to + movementLoop)
+      // FIX: whitelist direction values
+      if (typeof data.direction === "string" && VALID_DIRECTIONS.has(data.direction)) {
+        p.direction = data.direction;
+      }
+      // FIX: whitelist animation_frame values
+      if (typeof data.animation_frame === "string" && VALID_ANIMATION_FRAMES.has(data.animation_frame)) {
+        p.animation_frame = data.animation_frame;
+      }
+      // FIX: whitelist equipment keys — prevent arbitrary data injection
+      if (data.equipment && typeof data.equipment === "object" && !Array.isArray(data.equipment)) {
+        const sanitized = {};
+        for (const key of VALID_EQUIPMENT_KEYS) {
+          if (key in data.equipment) sanitized[key] = data.equipment[key];
+        }
+        p.equipment = sanitized;
+      }
+
       if (typeof data.is_moving === "boolean") p.is_moving = data.is_moving;
-      if (typeof data.animation_frame === "string") p.animation_frame = data.animation_frame;
-      if (data.equipment && typeof data.equipment === "object") p.equipment = data.equipment;
 
       if (typeof data.is_invisible === "boolean" && p.admin_level === 'admin') {
         p.is_invisible = data.is_invisible;
@@ -219,11 +276,17 @@ function setupSocketHandlers(io) {
       });
     });
 
+    // -------- chat_message --------
     socket.on("chat_message", async (data = {}) => {
       const p = players.get(socket.id);
       if (!p) return;
 
-      const msg = (data.message ?? data.text ?? "").toString().trim();
+      // FIX: strict string type check, no .toString() on arbitrary objects
+      const raw = typeof data.message === 'string' ? data.message
+                : typeof data.text    === 'string' ? data.text
+                : null;
+      if (!raw) return;
+      const msg = raw.trim().slice(0, MAX_CHAT_LENGTH);
       if (!msg) return;
 
       const key = `chat_${p.playerId}`;
@@ -234,27 +297,14 @@ function setupSocketHandlers(io) {
       }
       chatRateLimit.set(key, now());
 
+      // FIX: use cached banned words list — no API call on every message
       try {
-        const bannedWordsResponse = await fetch(`${BASE44_API_URL}/entities/BannedWord`, {
-          method: "GET",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${BASE44_SERVICE_KEY}`,
-          },
-        });
-
-        if (bannedWordsResponse.ok) {
-          const bannedWords = await bannedWordsResponse.json();
-          const bannedWordsList = bannedWords.map(w => w.word.toLowerCase().trim());
-
-          const messageToCheck = msg.toLowerCase().replace(/\s+/g, '').replace(/[^\u0590-\u05FFa-z0-9]/g, '');
-
-          for (const bannedWord of bannedWordsList) {
-            const bannedWordNoSpaces = bannedWord.replace(/\s+/g, '').replace(/[^\u0590-\u05FFa-z0-9]/g, '');
-            if (messageToCheck.includes(bannedWordNoSpaces)) {
-              console.log(`🚫 BLOCKED: "${msg}" contains "${bannedWord}"`);
-              return;
-            }
+        const bannedWordsList = await getBannedWords();
+        const messageToCheck = msg.toLowerCase().replace(/\s+/g, '').replace(/[^\u0590-\u05FFa-z0-9]/g, '');
+        for (const word of bannedWordsList) {
+          if (messageToCheck.includes(word)) {
+            console.log(`🚫 BLOCKED: "${msg}" contains banned word`);
+            return;
           }
         }
       } catch (error) {
@@ -271,6 +321,7 @@ function setupSocketHandlers(io) {
       });
     });
 
+    // -------- admin_config_updated --------
     socket.on("admin_config_updated", (data = {}) => {
       const adminPlayer = players.get(socket.id);
       if (!adminPlayer) return;
@@ -280,16 +331,23 @@ function setupSocketHandlers(io) {
       io.emit("config_refresh_required", { type: data.type });
     });
 
+    // -------- admin_system_message --------
     socket.on("admin_system_message", (messageData = {}) => {
       const adminPlayer = players.get(socket.id);
       if (!adminPlayer) return;
       if (!["admin", "senior_touch"].includes(adminPlayer.admin_level)) return;
 
+      // FIX: sanitize sender_name — strip newlines, limit length
+      const senderName = typeof messageData.sender_name === 'string'
+        ? messageData.sender_name.replace(/[\r\n]/g, ' ').trim().slice(0, 50)
+        : adminPlayer.username;
+
       const payload = {
         id: "system",
-        username: messageData.sender_name || adminPlayer.username,
+        username: senderName,
         admin_level: adminPlayer.admin_level,
-        message: String(messageData.message || "").slice(0, 300),
+        // FIX: sanitize message — strip newlines, limit length
+        message: String(messageData.message || "").replace(/[\r\n]/g, ' ').trim().slice(0, 300),
         timestamp: Date.now(),
       };
 
@@ -301,12 +359,14 @@ function setupSocketHandlers(io) {
       }
     });
 
+    // -------- change_area --------
     socket.on("change_area", (data = {}) => {
       const p = players.get(socket.id);
       if (!p) return;
 
+      // FIX: validate newArea is a non-empty string before using it as a room name
       const newArea = data.newArea;
-      if (!newArea || newArea === p.current_area) return;
+      if (typeof newArea !== 'string' || !newArea || newArea === p.current_area) return;
 
       const oldArea = p.current_area;
       socket.leave(oldArea);
@@ -326,6 +386,7 @@ function setupSocketHandlers(io) {
       socket.emit("donuts_sync", newAreaDonuts);
     });
 
+    // -------- disconnect --------
     socket.on("disconnect", (reason) => {
       const p = players.get(socket.id);
       if (!p) return;

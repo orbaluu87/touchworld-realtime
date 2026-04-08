@@ -10,7 +10,7 @@ function startMovementLoop(io) {
   setInterval(() => {
     const updatesByArea = new Map();
 
-    for (const [sid, player] of players) {
+    for (const [sid, player] of Array.from(players)) {
       if (!player.is_moving || player.destination_x === undefined || player.destination_y === undefined) {
         continue;
       }
