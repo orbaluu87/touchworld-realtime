@@ -386,6 +386,18 @@ function setupSocketHandlers(io) {
       socket.emit("donuts_sync", newAreaDonuts);
     });
 
+    // -------- tab_visibility --------
+    socket.on("tab_visibility", (data = {}) => {
+      const p = players.get(socket.id);
+      if (!p) return;
+
+      socket.to(p.current_area).emit("player_tab_visibility", {
+        id: p.playerId,
+        playerId: p.playerId,
+        is_tab_active: !!data.is_tab_active,
+      });
+    });
+
     // -------- disconnect --------
     socket.on("disconnect", (reason) => {
       const p = players.get(socket.id);
