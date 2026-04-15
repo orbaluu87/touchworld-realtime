@@ -386,6 +386,20 @@ function setupSocketHandlers(io) {
       socket.emit("donuts_sync", newAreaDonuts);
     });
 
+    // -------- player_emoji --------
+    socket.on("player_emoji", (data = {}) => {
+      const p = players.get(socket.id);
+      if (!p) return;
+
+      const { emojiId } = data;
+      if (typeof emojiId !== 'string' || !emojiId || emojiId.length > 50) return;
+
+      socket.to(p.current_area).emit("player_emoji", {
+        playerId: p.playerId,
+        emojiId,
+      });
+    });
+
     // -------- tab_visibility --------
     socket.on("tab_visibility", (data = {}) => {
       const p = players.get(socket.id);

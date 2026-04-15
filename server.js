@@ -84,6 +84,7 @@ httpServer.listen(PORT, () => {
   console.log(`🧪 Potion System Integration!`);
   console.log(`🚫 Server-Side Banned Words Check!`);
   console.log(`👁️  TAB VISIBILITY SYNC enabled!`);
+  console.log(`😀 EMOJI BROADCAST enabled!`);
   console.log(`${"★".repeat(60)}\n`);
 
   if (donutManager && typeof donutManager.initialize === 'function') {
